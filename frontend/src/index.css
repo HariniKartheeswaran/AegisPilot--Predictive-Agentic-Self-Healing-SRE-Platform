@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(1200px 600px at 15% -10%, rgba(77, 159, 255, 0.08), transparent 60%),
+    radial-gradient(900px 500px at 110% 10%, rgba(167, 139, 250, 0.06), transparent 55%),
+    #0b0e14;
+  color: #e6ebf5;
+  font-family: Inter, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Thin, unobtrusive ops-console scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #272f42 transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #272f42;
+  border-radius: 8px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #3a445c;
+}
+
+@layer components {
+  .panel {
+    @apply rounded-xl border border-white/[0.06] bg-ink-850/70 backdrop-blur-sm shadow-panel;
+  }
+  .panel-header {
+    @apply flex items-center justify-between border-b border-white/[0.06] px-4 py-3;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm font-semibold transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-signal-blue/60 disabled:cursor-not-allowed disabled:opacity-40;
+  }
+  .btn-primary {
+    @apply bg-signal-blue/90 text-ink-950 hover:bg-signal-blue;
+  }
+  .btn-ghost {
+    @apply border border-white/10 bg-white/[0.02] text-slate-200 hover:bg-white/[0.06];
+  }
+}
+
+/* Faint scanline grid used on the graph canvas */
+.grid-bg {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+  background-size: 28px 28px;
+}

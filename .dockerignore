@@ -1,0 +1,36 @@
+# Keep the build context small and never ship secrets or local state.
+
+# Secrets & local env
+.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Local SQLite state (re-seeded on startup)
+*.db
+*.sqlite
+aegisops.db
+
+# Node — reinstalled inside the build stage
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# VCS / editor / OS
+.git/
+.gitignore
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Docs (not needed at runtime)
+*.md

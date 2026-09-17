@@ -1,0 +1,27 @@
+# --- Web / API ---
+fastapi==0.141.1          # >=0.133 required by google-adk 2.8.0
+uvicorn[standard]==0.34.0
+sse-starlette==2.2.1
+python-multipart==0.0.20
+
+# --- Google AI (mandatory per spec) ---
+# Pinned to the exact verified versions so container builds are fast + reproducible
+# (loose pins made pip backtrack for minutes). Real google-adk (LlmAgent+Runner).
+google-adk==2.8.0
+google-genai==2.20.0
+
+# --- Config / models ---
+pydantic==2.13.5
+pydantic-settings==2.7.1
+python-dotenv==1.0.1
+
+# --- Services ---
+httpx==0.28.1          # Slack webhook + async HTTP
+numpy==2.2.1           # vector similarity for incident memory
+
+# --- Demo asset generation (realistic Grafana snapshot for vision agent) ---
+matplotlib==3.10.0
+
+# --- Cloud storage/messaging (Phase 3-4; used when BACKEND=cloud) ---
+google-cloud-firestore==2.29.0
+google-cloud-pubsub==2.39.2

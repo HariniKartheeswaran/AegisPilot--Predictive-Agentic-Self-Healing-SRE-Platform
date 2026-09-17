@@ -1,0 +1,46 @@
+# --- Secrets ---
+.env
+*.env
+!.env.example
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+*.sqlite
+*.db
+aegisops.db
+
+# --- Node / Frontend ---
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.local
+
+# --- OS / Editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Runtime artifacts
+tickets/
+.venv/server.log
+.venv/adk_install.log
+
+# Private working context doc (not for the repo)
+AegisPilot_PROJECT_CONTEXT.md
+
+# --- Internal / reference docs (kept locally, NOT published to GitHub) ---
+AegisPilot_MASTER_SPEC_FREE.md
+AegisPilot_UPGRADE_TO_GCP.md
+AegisPilot_DEMO_SCRIPT.md
+CONTRACT.md
+.claude/
+
+# --- TypeScript incremental build artifacts ---
+*.tsbuildinfo
