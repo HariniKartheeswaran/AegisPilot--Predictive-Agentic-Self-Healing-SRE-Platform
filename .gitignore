@@ -44,3 +44,12 @@ CONTRACT.md
 
 # --- TypeScript incremental build artifacts ---
 *.tsbuildinfo
+
+# --- Kubernetes credentials / real secrets (manifests under k8s/ stay tracked) ---
+kubeconfig.yaml
+**/kubeconfig*
+*.pem
+k8s/warroom/secret.yaml
+k8s/**/ecr-pull-secret.yaml
+!k8s/**/secret.example.yaml
+!k8s/**/ecr-pull-secret.example.yaml

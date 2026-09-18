@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aegis-warroom-blue
+  namespace: aegispilot
+  labels:
+    app: aegis-warroom
+    team: aegis
+    slot: blue
+    version: v0.1.0
+  annotations:
+    image.tag: v0.1.0
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aegis-warroom
+      slot: blue
+  template:
+    metadata:
+      labels:
+        app: aegis-warroom
+        team: aegis
+        slot: blue
+        version: v0.1.0
+      annotations:
+        image.tag: v0.1.0
+    spec:
+      serviceAccountName: aegis-warroom
+      imagePullSecrets:
+        - name: ecr-pull
+      containers:
+        - name: warroom
+          image: 011528303937.dkr.ecr.ap-south-1.amazonaws.com/aegispilot/warroom:v0.1.0
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: aegis-warroom-config
+            - secretRef:
+                name: aegis-warroom-secrets
+          volumeMounts:
+            - name: gcp-credentials
+              mountPath: /var/secrets/google
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: gcp-credentials
+          secret:
+            secretName: aegis-warroom-secrets
+            items:
+              - key: gcp-sa.json
+                path: gcp-sa.json
