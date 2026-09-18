@@ -31,7 +31,7 @@ spec:
         - name: ecr-pull
       containers:
         - name: warroom
-          image: 011528303937.dkr.ecr.ap-south-1.amazonaws.com/aegispilot/warroom:v0.1.0
+          image: 850887971586.dkr.ecr.ap-south-1.amazonaws.com/aegispilot/warroom:v0.1.0
           imagePullPolicy: Always
           ports:
             - name: http
