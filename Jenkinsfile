@@ -119,7 +119,7 @@ pipeline {
 
                     python -m pip install --upgrade pip
                     python -m pip install -r backend/requirements.txt
-                    python -m pip install pytest pytest-cov flake8 httpx ruff
+                    python -m pip install pytest pytest-cov pytest-asyncio flake8 httpx ruff
                 '''
             }
         }
