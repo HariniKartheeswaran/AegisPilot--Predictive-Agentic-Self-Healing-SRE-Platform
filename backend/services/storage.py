@@ -13,7 +13,7 @@ import json
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from backend.models import (
     AgentRegistryEntry,

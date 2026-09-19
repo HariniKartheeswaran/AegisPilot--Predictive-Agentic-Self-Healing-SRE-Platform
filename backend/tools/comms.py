@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from backend.config import REPO_ROOT
@@ -62,7 +61,6 @@ def render_slack_summary(incident: Incident) -> str:
     """
     f = incident.findings
     sev = incident.severity.value if incident.severity else "SEV?"
-    corr = f.get("correlation", {})
     rem = f.get("remediation", {})
     mem = f.get("memory", {})
     res_min = resolution_minutes(incident)
