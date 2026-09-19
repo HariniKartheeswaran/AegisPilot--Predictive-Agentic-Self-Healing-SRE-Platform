@@ -301,8 +301,13 @@ pipeline {
                             kubectl apply \
                               -f "$K8S_ASSETS_DIR/$K8S_MANIFEST_DIR/rbac.yaml"
 
-                            kubectl apply \
-                              -f "$K8S_ASSETS_DIR/$K8S_MANIFEST_DIR/service.yaml"
+                            if kubectl -n "$NAMESPACE" get service "$ACTIVE_SERVICE" >/dev/null 2>&1; then
+                                echo "▶ Existing service $ACTIVE_SERVICE found; preserving its current selector."
+                            else
+                                echo "▶ Service $ACTIVE_SERVICE does not exist; creating it from the reviewed manifest."
+                                kubectl apply \
+                                  -f "$K8S_ASSETS_DIR/$K8S_MANIFEST_DIR/service.yaml"
+                            fi
 
                             kubectl apply \
                               -f "$K8S_ASSETS_DIR/$K8S_MANIFEST_DIR/ingress.yaml"
