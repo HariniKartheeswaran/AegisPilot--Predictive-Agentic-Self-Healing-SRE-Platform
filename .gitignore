@@ -44,3 +44,12 @@ CONTRACT.md
 
 # --- TypeScript incremental build artifacts ---
 *.tsbuildinfo
+
+
+# --- Test / coverage artifacts ---
+.coverage
+coverage.xml
+htmlcov/
+
+# --- Temporary working files ---
+tmp/

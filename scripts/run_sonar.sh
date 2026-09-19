@@ -23,10 +23,8 @@ elif [[ -n "${SONAR_SCANNER_HOME:-}" ]] && [[ -x "${SONAR_SCANNER_HOME}/bin/sona
   echo "Using SONAR_SCANNER_HOME: ${SONAR_SCANNER_HOME}..."
   "${SONAR_SCANNER_HOME}/bin/sonar-scanner" -Dproject.settings=sonar-project.properties
 else
-  echo "⚠ Warning: 'sonar-scanner' executable not found in PATH or SONAR_SCANNER_HOME."
-  echo "  To enable real SonarQube analysis, configure the SonarQube Scanner tool in Jenkins."
-  echo "  Skipping scan cleanly for environments without the scanner binary."
-  exit 0
+  echo "ERROR: 'sonar-scanner' executable not found in PATH or SONAR_SCANNER_HOME." >&2
+  echo "Configure the SonarQube Scanner tool in Jenkins before enabling RUN_SONAR." >&2
+  exit 1
 fi
-
 echo "✓ SonarQube analysis finished successfully."
