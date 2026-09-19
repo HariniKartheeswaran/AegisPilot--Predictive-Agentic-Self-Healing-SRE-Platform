@@ -248,8 +248,10 @@ pipeline {
                     command -v aws >/dev/null
                     command -v docker >/dev/null
 
-                    aws sts get-caller-identity >/dev/null
+                    echo "▶ Checking AWS identity..."
+                    aws sts get-caller-identity
 
+                    echo "▶ Checking ECR access..."
                     aws ecr get-login-password --region "$ECR_REGION" \
                       | docker login \
                           --username AWS \
