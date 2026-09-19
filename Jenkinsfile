@@ -95,11 +95,11 @@ pipeline {
                 }
 
                 echo "============================================================"
-                echo "▶ Application Commit : ${APP_COMMIT}"
-                echo "▶ Build Version      : ${IMAGE_TAG}"
-                echo "▶ Target Service     : ${APP_NAME}"
-                echo "▶ Namespace          : ${NAMESPACE}"
-                echo "▶ Target Image       : ${IMAGE}"
+                echo "▶ Application Commit : ${env.APP_COMMIT}"
+                echo "▶ Build Version      : ${env.IMAGE_TAG}"
+                echo "▶ Target Service     : ${env.APP_NAME}"
+                echo "▶ Namespace          : ${env.NAMESPACE}"
+                echo "▶ Target Image       : ${env.IMAGE}"
                 echo "============================================================"
 
                 sh 'mkdir -p reports'
@@ -248,7 +248,7 @@ pipeline {
             }
 
             steps {
-                echo "▶ Building immutable image ${IMAGE}..."
+                echo "▶ Building immutable image ${env.IMAGE}..."
 
                 sh '''
                     set -eu
@@ -344,9 +344,9 @@ pipeline {
                     }
                 }
 
-                echo "▶ Active slot: ${ACTIVE_COLOR}"
-                echo "▶ Candidate slot: ${DEPLOY_COLOR}"
-                echo "▶ Candidate deployment: ${TARGET_DEPLOYMENT}"
+                echo "▶ Active slot: ${env.ACTIVE_COLOR}"
+                echo "▶ Candidate slot: ${env.DEPLOY_COLOR}"
+                echo "▶ Candidate deployment: ${env.TARGET_DEPLOYMENT}"
             }
         }
 
