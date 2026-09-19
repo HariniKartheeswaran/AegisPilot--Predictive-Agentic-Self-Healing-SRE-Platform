@@ -50,15 +50,6 @@ pipeline {
 
         KUBECONFIG_CREDENTIALS_ID = 'k3s-kubeconfig'
 
-        IMAGE_TAG = ''
-        IMAGE = ''
-        DEPLOY_COLOR = ''
-        ACTIVE_COLOR = ''
-        TARGET_DEPLOYMENT = ''
-        APP_COMMIT = ''
-
-        TRAFFIC_PROMOTED = 'false'
-
         SONAR_SERVER = 'team3-sonar'
         REPORTS_DIR = 'reports'
 
@@ -92,6 +83,7 @@ pipeline {
                     env.APP_COMMIT = commit
                     env.IMAGE_TAG = "${commit.take(7)}-${env.BUILD_NUMBER}"
                     env.IMAGE = "${env.ECR_REGISTRY}/${env.ECR_REPOSITORY}:${env.IMAGE_TAG}"
+                    env.TRAFFIC_PROMOTED = 'false'
                 }
 
                 echo "============================================================"
