@@ -60,6 +60,17 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8080
 
+    # --- Remediation executor ---
+    # simulate = ordered dry-run steps (local/tests)
+    # kubernetes = real Deployment patches via the cluster API
+    remediation_mode: str = "simulate"
+    k8s_namespace: str = "aegispilot"
+    k8s_remediate_deployments: str = (
+        "checkout-svc,cart-svc,payments-svc,"
+        "aegis-warroom-blue,aegis-warroom-green"
+    )
+    k8s_active_slot: str = ""  # blue | green when remediating war room
+
     # --- Storage ---
     aegis_db_path: str = "aegisops.db"
 
@@ -97,6 +108,14 @@ class Settings(BaseSettings):
             if self.google_cloud_project:
                 os.environ["GOOGLE_CLOUD_PROJECT"] = self.google_cloud_project
             os.environ["GOOGLE_CLOUD_LOCATION"] = self.vertex_location
+
+        # Export remediation settings so tools/remediation.py (and any
+        # in-cluster process) reads a single source of truth.
+        os.environ["REMEDIATION_MODE"] = self.remediation_mode
+        os.environ["K8S_NAMESPACE"] = self.k8s_namespace
+        os.environ["K8S_REMEDIATE_DEPLOYMENTS"] = self.k8s_remediate_deployments
+        if self.k8s_active_slot:
+            os.environ["K8S_ACTIVE_SLOT"] = self.k8s_active_slot
 
 
 @lru_cache
