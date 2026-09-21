@@ -29,7 +29,7 @@ class RemediationAgent(BaseAgent):
     name = "Remediation"
     version = "1.0.0"
     allowed_tools = ["remediation_planner", "approval_gate", "executor"]
-    scope = "Propose a reversible fix, gate on human approval, execute (simulated)"
+    scope = "Propose a reversible fix, gate on human approval, execute (mode-aware)"
     headline = "Proposing a fix (human gate)"
 
     async def execute(self, ctx: RunContext) -> None:

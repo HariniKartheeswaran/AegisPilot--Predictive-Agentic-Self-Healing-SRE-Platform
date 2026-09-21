@@ -75,5 +75,11 @@ if [[ "$verified_slot" != "$target_slot" ]]; then
   fail "service selector verification failed (expected ${target_slot}, got ${verified_slot})"
 fi
 
+# Only the active slot should pull Pub/Sub / hold in-memory approval gates.
+# Scale the previous slot to zero so alerts and /approve stay on one process.
+prev_deployment=$(deployment_for_slot "$current_slot")
+log "scaling previous slot ${current_slot} (${prev_deployment}) to 0 replicas"
+kubectl scale deployment "$prev_deployment" -n "$NAMESPACE" --replicas=0 >/dev/null
+
 log "promote succeeded: ${current_slot} -> ${target_slot}"
 exit 0

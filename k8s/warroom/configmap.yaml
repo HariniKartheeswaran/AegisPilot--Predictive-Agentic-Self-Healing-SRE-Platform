@@ -18,8 +18,10 @@ data:
   REMEDIATION_MODE: kubernetes
   K8S_NAMESPACE: aegispilot
   K8S_ACTIVE_SERVICE: aegis-warroom
+  K8S_ACTIVE_SLOT: green
   K8S_BLUE_DEPLOYMENT: aegis-warroom-blue
   K8S_GREEN_DEPLOYMENT: aegis-warroom-green
+  K8S_REMEDIATE_DEPLOYMENTS: checkout-svc,cart-svc,payments-svc,aegis-warroom-blue,aegis-warroom-green
   HOST: 0.0.0.0
   PORT: "8080"
   GOOGLE_APPLICATION_CREDENTIALS: /var/secrets/google/gcp-sa.json
