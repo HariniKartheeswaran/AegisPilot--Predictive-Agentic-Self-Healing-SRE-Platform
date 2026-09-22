@@ -6,6 +6,7 @@ import pytest
 
 from backend.tools.remediation import (
     ACTION_CATALOG,
+    _deployment_for,
     build_plan,
     execute_remediation,
 )
@@ -92,3 +93,14 @@ def test_kubernetes_mode_rejects_unknown_target(monkeypatch):
         assert any("allowlist" in (s.detail or "") for s in result.steps)
 
     asyncio.run(_run())
+
+
+def test_warroom_deployment_follows_active_slot(monkeypatch):
+    """War-room incidents map to the active blue/green Deployment."""
+    import backend.tools.remediation as rem
+
+    monkeypatch.setattr(rem, "_active_warroom_slot", lambda: "blue")
+    assert _deployment_for("aegis-warroom") == "aegis-warroom-blue"
+    monkeypatch.setattr(rem, "_active_warroom_slot", lambda: "green")
+    assert _deployment_for("aegis-warroom") == "aegis-warroom-green"
+    assert _deployment_for("checkout-svc") == "checkout-svc"

@@ -55,18 +55,52 @@ def _allowlist() -> set[str]:
     return {x.strip() for x in raw.split(",") if x.strip()}
 
 
+def _active_warroom_slot() -> str:
+    """Resolve the live traffic slot for aegis-warroom.
+
+    Source of truth is the Service selector (what promote actually switches).
+    ``K8S_ACTIVE_SLOT`` is only a fallback when the API is unreachable (local
+    tests / bootstrap). This avoids stale ConfigMap values after promote.
+    """
+    svc_name = (os.getenv("K8S_ACTIVE_SERVICE") or "aegis-warroom").strip()
+    ns = _namespace()
+    try:
+        from kubernetes import client, config
+        from kubernetes.config.config_exception import ConfigException
+
+        try:
+            config.load_incluster_config()
+        except ConfigException:
+            config.load_kube_config()
+        core = client.CoreV1Api()
+        svc = core.read_namespaced_service(svc_name, ns)
+        slot = ((svc.spec.selector or {}).get("slot") or "").strip()
+        if slot in ("blue", "green"):
+            return slot
+        log.warning(
+            "service/%s selector.slot=%r; falling back to K8S_ACTIVE_SLOT",
+            svc_name, slot,
+        )
+    except Exception as exc:  # noqa: BLE001 — prefer env fallback over hard fail here
+        log.warning("could not read active slot from service/%s: %s", svc_name, exc)
+
+    env_slot = (os.getenv("K8S_ACTIVE_SLOT") or "").strip()
+    if env_slot in ("blue", "green"):
+        return env_slot
+    return "green"
+
+
 def _deployment_for(service: str) -> str:
     """Map incident service name → Deployment name.
 
     Scrape services use the same name (checkout-svc). War-room incidents map to
-    the active slot Deployment when K8S_ACTIVE_SLOT is set.
+    the Deployment that currently receives traffic (Service selector slot).
     """
     name = service.strip()
     if name in ("aegis-warroom", "warroom", "aegis-warroom-svc"):
-        slot = (os.getenv("K8S_ACTIVE_SLOT") or "").strip()
-        if slot in ("blue", "green"):
-            return f"aegis-warroom-{slot}"
-        # Prefer green if both exist; caller still must be on allowlist.
+        slot = _active_warroom_slot()
+        if slot == "blue":
+            return os.getenv("K8S_BLUE_DEPLOYMENT", "aegis-warroom-blue")
         return os.getenv("K8S_GREEN_DEPLOYMENT", "aegis-warroom-green")
     return name
 

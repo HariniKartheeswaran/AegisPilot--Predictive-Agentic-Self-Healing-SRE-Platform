@@ -75,6 +75,15 @@ if [[ "$verified_slot" != "$target_slot" ]]; then
   fail "service selector verification failed (expected ${target_slot}, got ${verified_slot})"
 fi
 
+# Keep ConfigMap in sync for humans / next pod boot. Live remediation reads the
+# Service selector as source of truth (does not wait for a ConfigMap restart).
+if kubectl get configmap aegis-warroom-config -n "$NAMESPACE" >/dev/null 2>&1; then
+  log "updating ConfigMap aegis-warroom-config K8S_ACTIVE_SLOT=${target_slot}"
+  kubectl patch configmap aegis-warroom-config -n "$NAMESPACE" --type merge \
+    -p "{\"data\":{\"K8S_ACTIVE_SLOT\":\"${target_slot}\"}}" >/dev/null \
+    || log "WARNING: failed to patch K8S_ACTIVE_SLOT (Service selector remains source of truth)"
+fi
+
 # Only the active slot should pull Pub/Sub / hold in-memory approval gates.
 # Scale the previous slot to zero so alerts and /approve stay on one process.
 prev_deployment=$(deployment_for_slot "$current_slot")
