@@ -42,7 +42,10 @@ class Orchestrator:
         # Keep the demo scenario temporally fresh (bad deploy ~12 min ago) so
         # Correlation confidence reflects a just-shipped regression.
         from backend.seed.seed_data import refresh_demo_timeline
+        from backend.services.live_snapshot import ensure_alert_snapshot
+
         refresh_demo_timeline(self.deps.storage)
+        ensure_alert_snapshot(alert)
 
         incident = Incident(status=IncidentStatus.DETECTED, service=alert.service, alert=alert)
         self.deps.storage.save_incident(incident)

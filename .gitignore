@@ -29,6 +29,8 @@ Thumbs.db
 
 # Runtime artifacts
 tickets/
+backend/seed/live/*.png
+!backend/seed/live/.gitkeep
 .venv/server.log
 .venv/adk_install.log
 
