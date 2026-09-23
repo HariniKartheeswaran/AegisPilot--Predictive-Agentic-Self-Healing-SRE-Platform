@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any, Optional
+from typing import Any
 
 from google.adk.models import LlmRequest, LlmResponse
 from google.adk.tools.base_tool import BaseTool
