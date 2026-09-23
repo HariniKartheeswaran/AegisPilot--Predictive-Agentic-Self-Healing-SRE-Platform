@@ -231,6 +231,8 @@ async def health(request: Request):
         "compute_location": s.google_cloud_location,
         "backend": s.backend,
         "slack_configured": s.has_slack,
+        "prometheus_configured": s.has_prometheus,
+        "grafana_url": s.grafana_url or None,
     }
 
 

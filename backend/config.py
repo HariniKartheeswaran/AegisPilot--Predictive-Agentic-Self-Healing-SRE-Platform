@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     )
     k8s_active_slot: str = ""  # blue | green when remediating war room
 
+    # --- Live metrics / Grafana vision ---
+    # When set, Fire/alerts without a screenshot get a real Prom-rendered PNG.
+    prometheus_url: str = ""
+    grafana_url: str = ""  # e.g. http://3.111.113.151:3000 — Explore deep-links
+
     # --- Storage ---
     aegis_db_path: str = "aegisops.db"
 
@@ -116,6 +121,14 @@ class Settings(BaseSettings):
         os.environ["K8S_REMEDIATE_DEPLOYMENTS"] = self.k8s_remediate_deployments
         if self.k8s_active_slot:
             os.environ["K8S_ACTIVE_SLOT"] = self.k8s_active_slot
+        if self.prometheus_url:
+            os.environ["PROMETHEUS_URL"] = self.prometheus_url
+        if self.grafana_url:
+            os.environ["GRAFANA_URL"] = self.grafana_url
+
+    @property
+    def has_prometheus(self) -> bool:
+        return bool(self.prometheus_url.strip())
 
 
 @lru_cache

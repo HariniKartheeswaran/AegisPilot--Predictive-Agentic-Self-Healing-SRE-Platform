@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aegis-warroom-config
+  namespace: aegispilot
+  labels:
+    app: aegis-warroom
+    team: aegis
+data:
+  BACKEND: cloud
+  ORCHESTRATOR: adk
+  PUBSUB_MODE: pull
+  GOOGLE_GENAI_USE_VERTEXAI: "true"
+  GOOGLE_CLOUD_LOCATION: us-central1
+  VERTEX_LOCATION: global
+  GEMINI_MODEL: gemini-3.5-flash
+  GEMINI_MODEL_PRO: gemini-2.5-pro
+  REMEDIATION_MODE: kubernetes
+  K8S_NAMESPACE: aegispilot
+  K8S_ACTIVE_SERVICE: aegis-warroom
+  K8S_ACTIVE_SLOT: green
+  K8S_BLUE_DEPLOYMENT: aegis-warroom-blue
+  K8S_GREEN_DEPLOYMENT: aegis-warroom-green
+  K8S_REMEDIATE_DEPLOYMENTS: checkout-svc,cart-svc,payments-svc,aegis-warroom-blue,aegis-warroom-green
+  PROMETHEUS_URL: http://3.111.113.151:9090
+  GRAFANA_URL: http://3.111.113.151:3000
+  HOST: 0.0.0.0
+  PORT: "8080"
+  GOOGLE_APPLICATION_CREDENTIALS: /var/secrets/google/gcp-sa.json

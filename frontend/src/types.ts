@@ -128,6 +128,7 @@ export interface VisionResult {
   confirmed: boolean | null;
   observation: string;
   annotation: string;
+  explore_url?: string | null;
 }
 
 export interface WarRoomState {
