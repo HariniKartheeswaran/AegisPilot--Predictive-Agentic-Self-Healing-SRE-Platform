@@ -8,8 +8,8 @@ constructor lines marked below.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
+from typing import Optional
 from contextlib import asynccontextmanager
 from pathlib import Path
 

@@ -55,3 +55,11 @@ k8s/warroom/secret.yaml
 k8s/**/ecr-pull-secret.yaml
 !k8s/**/secret.example.yaml
 !k8s/**/ecr-pull-secret.example.yaml
+
+# --- Test / coverage artifacts ---
+.coverage
+coverage.xml
+htmlcov/
+
+# --- Temporary working files ---
+tmp/
