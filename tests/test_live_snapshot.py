@@ -8,7 +8,9 @@ from backend.models import Alert
 def test_explore_url_contains_grafana_and_query():
     url = explore_url("checkout-svc", grafana_base="http://3.111.113.151:3000")
     assert url.startswith("http://3.111.113.151:3000/explore")
-    assert "aegis-" in url or "up" in url
+    # panes JSON is URL-encoded; checkout service must appear in the Explore link
+    assert "checkout-svc" in url
+    assert "http_requests_total" in url
 
 
 def test_ensure_skips_when_snapshot_already_set(monkeypatch):

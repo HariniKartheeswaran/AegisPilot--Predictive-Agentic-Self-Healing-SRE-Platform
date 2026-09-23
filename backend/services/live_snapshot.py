@@ -3,9 +3,15 @@
 When an alert has no ``grafana_snapshot``, pull real Prometheus series and render
 a dark Grafana-style PNG the vision agent can read. Also builds a Grafana Explore
 deep-link so the War Room UI can open the same query.
+
+Snapshots are written under ``/tmp/aegis_snapshots`` (always writable) and a
+base64 copy is stored on ``alert.metadata`` so the UI can still serve the image
+after a pod recycle (Firestore keeps the incident; local disk does not).
 """
 from __future__ import annotations
 
+import base64
+import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -20,7 +26,7 @@ matplotlib.use("Agg")
 import matplotlib.dates as mdates  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
 
-from backend.config import SEED_DIR, get_settings
+from backend.config import get_settings
 
 log = logging.getLogger("aegisops.live_snapshot")
 
@@ -30,43 +36,57 @@ GRID = "#2a3242"
 TEXT = "#c7d0e0"
 GREEN = "#3fb950"
 RED = "#f85149"
-BLUE = "#58a6ff"
 AMBER = "#d29922"
 
-LIVE_DIR = SEED_DIR / "live"
+# Writable in the container even when the image layer is read-only elsewhere.
+SNAP_DIR = Path("/tmp/aegis_snapshots")
 
-# service name → Prometheus label matcher used by our scrape jobs
-_SERVICE_MATCH = {
-    "checkout-svc": 'service="checkout-svc"',
-    "cart-svc": 'service="cart-svc"',
-    "payments-svc": 'service="payments-svc"',
-}
-
-
-def explore_url(service: str, *, grafana_base: str, prom_datasource_uid: str = "") -> str:
-    """Grafana Explore URL for the live up query (same data as scrapes)."""
-    base = grafana_base.rstrip("/")
-    left = 'up{job=~"aegis-.*"}'
-    org = "1"
-    query = quote(left, safe="")
-    return (
-        f"{base}/explore?orgId={org}&left="
-        f"%5B%22now-1h%22,%22now%22,%22prometheus%22,%7B%22expr%22:%22{query}%22%7D%5D"
-    )
+# Scrape services that expose http_requests_total
+_SCRAPE_SERVICES = {"checkout-svc", "cart-svc", "payments-svc"}
 
 
 def _error_rate_query(service: str) -> str:
-    matcher = _SERVICE_MATCH.get(service, f'service="{service}"')
+    """5xx %% for a scrape service, or all aegis scrapes for warroom/other."""
+    if service in _SCRAPE_SERVICES:
+        sel = f'service="{service}"'
+    else:
+        sel = 'job=~"aegis-.*"'
     return (
-        f'sum(rate(http_requests_total{{{matcher},code=~"5.."}}[1m])) '
-        f'/ clamp_min(sum(rate(http_requests_total{{{matcher}}}[1m])), 1e-9) * 100'
+        f"("
+        f'sum(rate(http_requests_total{{{sel},code=~"5.."}}[1m])) '
+        f'or vector(0)'
+        f") "
+        f"/ "
+        f"clamp_min("
+        f'sum(rate(http_requests_total{{{sel}}}[1m])) or vector(1e-9)'
+        f", 1e-9) * 100"
     )
 
 
 def _up_query(service: str) -> str:
-    if service in _SERVICE_MATCH:
-        return f'up{{{_SERVICE_MATCH[service]}}}'
+    if service in _SCRAPE_SERVICES:
+        return f'up{{service="{service}"}}'
     return 'up{job=~"aegis-.*"}'
+
+
+def explore_url(service: str, *, grafana_base: str, prom_datasource_uid: str = "") -> str:
+    """Grafana Explore deep-link (schemaVersion=1 panes) for live scrapes."""
+    base = grafana_base.rstrip("/")
+    # Match the Diagnosis PNG: up + 5xx rate so "Open in Grafana" is never empty.
+    panes = {
+        "aegis": {
+            "datasource": "prometheus",
+            "queries": [
+                {"refId": "A", "expr": _up_query(service)},
+                {"refId": "B", "expr": _error_rate_query(service)},
+            ],
+            "range": {"from": "now-1h", "to": "now"},
+        }
+    }
+    return (
+        f"{base}/explore?orgId=1&schemaVersion=1&panes="
+        f"{quote(json.dumps(panes, separators=(',', ':')))}"
+    )
 
 
 def _query_range(prom_url: str, query: str, minutes: int = 60, step: str = "15s") -> list[tuple[float, float]]:
@@ -82,15 +102,17 @@ def _query_range(prom_url: str, query: str, minutes: int = 60, step: str = "15s"
     result = body.get("data", {}).get("result") or []
     if not result:
         return []
-    # Merge first series (or max across series for up)
-    points: list[tuple[float, float]] = []
+    # Prefer a single series: take values from the first series; if multiple "up"
+    # series, average at each timestamp via simple last-writer merge then fill.
+    by_ts: dict[float, list[float]] = {}
     for series in result:
         for ts, val in series.get("values") or []:
             try:
-                points.append((float(ts), float(val)))
+                t, v = float(ts), float(val)
             except (TypeError, ValueError):
                 continue
-    points.sort(key=lambda p: p[0])
+            by_ts.setdefault(t, []).append(v)
+    points = sorted((t, sum(vs) / len(vs)) for t, vs in by_ts.items())
     return points
 
 
@@ -141,19 +163,21 @@ def capture_live_snapshot(service: str) -> Optional[dict[str, Any]]:
     try:
         up_pts = _query_range(prom, _up_query(service))
         err_pts = _query_range(prom, _error_rate_query(service))
-        # Fallback: all aegis ups if service-specific empty
         if not up_pts:
             up_pts = _query_range(prom, 'up{job=~"aegis-.*"}')
         stamp = int(time.time() * 1000)
-        rel = Path("backend/seed/live") / f"{service}_{stamp}.png"
-        abs_path = SEED_DIR.parent.parent / rel
+        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in service)
+        abs_path = SNAP_DIR / f"{safe}_{stamp}.png"
         _render_png(service, up_pts, err_pts, abs_path)
+        raw = abs_path.read_bytes()
         link = explore_url(service, grafana_base=grafana) if grafana else ""
-        log.info("live snapshot for %s → %s (up=%d err=%d pts)",
-                 service, rel, len(up_pts), len(err_pts))
+        log.info("live snapshot for %s → %s (up=%d err=%d pts, %d bytes)",
+                 service, abs_path, len(up_pts), len(err_pts), len(raw))
         return {
-            "grafana_snapshot": str(rel).replace("\\", "/"),
+            # Absolute path so FileResponse does not depend on cwd / image layers.
+            "grafana_snapshot": str(abs_path),
             "grafana_explore_url": link,
+            "grafana_snapshot_b64": base64.b64encode(raw).decode("ascii"),
             "source": "prometheus",
         }
     except Exception:  # noqa: BLE001 — never block the incident pipeline
@@ -164,7 +188,6 @@ def capture_live_snapshot(service: str) -> Optional[dict[str, Any]]:
 def ensure_alert_snapshot(alert) -> Any:
     """If alert has no snapshot, attach a live Prom PNG + explore URL in metadata."""
     if getattr(alert, "grafana_snapshot", None):
-        # Still attach explore link when Grafana URL is configured.
         s = get_settings()
         if s.grafana_url and "grafana_explore_url" not in (alert.metadata or {}):
             alert.metadata = dict(alert.metadata or {})
@@ -179,6 +202,8 @@ def ensure_alert_snapshot(alert) -> Any:
     meta = dict(alert.metadata or {})
     if captured.get("grafana_explore_url"):
         meta["grafana_explore_url"] = captured["grafana_explore_url"]
+    if captured.get("grafana_snapshot_b64"):
+        meta["grafana_snapshot_b64"] = captured["grafana_snapshot_b64"]
     meta["snapshot_source"] = captured.get("source", "prometheus")
     alert.metadata = meta
     return alert

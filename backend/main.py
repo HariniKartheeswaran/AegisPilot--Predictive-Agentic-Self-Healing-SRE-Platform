@@ -272,20 +272,34 @@ async def rca(incident_id: str, request: Request):
 async def grafana(incident_id: str, request: Request):
     """Serve the exact Grafana image THIS incident's vision agent analyzed.
 
-    Each scenario carries its own snapshot; a custom incident may carry none
-    (then 404, and the UI shows a clean 'no snapshot' state) — we never serve a
-    misleading fallback from a different service.
+    Prefers the on-disk path; falls back to base64 stored on the alert metadata
+    so a pod recycle does not blank the Diagnosis panel.
     """
+    from fastapi.responses import Response
+
     inc = request.app.state.storage.get_incident(incident_id)
-    if not (inc and inc.alert and inc.alert.grafana_snapshot):
+    if not (inc and inc.alert and (inc.alert.grafana_snapshot or (inc.alert.metadata or {}).get("grafana_snapshot_b64"))):
         raise HTTPException(404, "no snapshot for this incident")
-    p = Path(inc.alert.grafana_snapshot)
-    if not p.is_absolute():
-        p = SEED_DIR.parent.parent / p
-    if not p.exists():
-        raise HTTPException(404, "snapshot not available")
-    media = "image/jpeg" if p.suffix.lower() in (".jpg", ".jpeg") else "image/png"
-    return FileResponse(p, media_type=media)
+
+    snap = inc.alert.grafana_snapshot
+    if snap:
+        p = Path(snap)
+        if not p.is_absolute():
+            p = SEED_DIR.parent.parent / p
+        if p.exists():
+            media = "image/jpeg" if p.suffix.lower() in (".jpg", ".jpeg") else "image/png"
+            return FileResponse(p, media_type=media)
+
+    b64 = (inc.alert.metadata or {}).get("grafana_snapshot_b64")
+    if b64:
+        import base64
+
+        media = "image/png"
+        if snap and str(snap).lower().endswith((".jpg", ".jpeg")):
+            media = "image/jpeg"
+        return Response(content=base64.b64decode(b64), media_type=media)
+
+    raise HTTPException(404, "snapshot not available")
 
 
 # --------------------------------------------------------------------------- #
