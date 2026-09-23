@@ -244,6 +244,7 @@ export function reduce(state: WarRoomState, ev: StreamEvent): WarRoomState {
           confirmed: p.confirmed ?? null,
           observation: p.observation ?? "",
           annotation: p.annotation ?? "",
+          explore_url: p.explore_url ?? null,
         },
       };
     }

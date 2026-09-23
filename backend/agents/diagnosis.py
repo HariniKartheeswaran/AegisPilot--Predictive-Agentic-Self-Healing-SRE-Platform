@@ -85,10 +85,12 @@ class DiagnosisAgent(BaseAgent):
                 await ctx.tool(self.name, "grafana_vision", "snapshot missing",
                                {"error": str(exc)})
             # Give the UI what it needs to render + overlay the image.
+            explore = (alert.metadata or {}).get("grafana_explore_url") or ""
             await ctx.emit(
                 "vision_result", agent=self.name, image_url=f"/api/incidents/{ctx.incident.id}/grafana",
                 confirmed=vision["confirmed"], observation=vision["observation"],
                 annotation=vision["annotation"],
+                explore_url=explore,
             )
 
         # 3. Summarize the diagnosis -----------------------------------------

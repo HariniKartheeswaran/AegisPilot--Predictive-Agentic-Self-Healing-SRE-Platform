@@ -73,7 +73,19 @@ export default function DiagnosisPanel({ state }: { state: WarRoomState }) {
           <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
             <Eye size={12} className="text-signal-violet" /> Grafana snapshot · vision
           </div>
-          {confirmChip}
+          <div className="flex items-center gap-2">
+            {vision?.explore_url && (
+              <a
+                href={vision.explore_url}
+                target="_blank"
+                rel="noreferrer"
+                className="text-[10px] font-semibold uppercase tracking-wide text-signal-blue hover:underline"
+              >
+                Open in Grafana
+              </a>
+            )}
+            {confirmChip}
+          </div>
         </div>
         <div className="relative overflow-hidden rounded-lg border border-white/10 bg-black/40">
           {id && imgStatus === "loading" && (
@@ -88,14 +100,27 @@ export default function DiagnosisPanel({ state }: { state: WarRoomState }) {
             </div>
           ) : (
             <>
-              <img
-                key={id}
-                src={api.grafanaUrl(id)}
-                alt="Grafana dashboard analyzed by the vision agent"
-                className="block w-full object-contain"
-                onLoad={() => setImgStatus("ok")}
-                onError={() => setImgStatus("error")}
-              />
+              {vision?.explore_url ? (
+                <a href={vision.explore_url} target="_blank" rel="noreferrer" title="Open live Grafana Explore">
+                  <img
+                    key={id}
+                    src={api.grafanaUrl(id)}
+                    alt="Grafana dashboard analyzed by the vision agent"
+                    className="block w-full cursor-pointer object-contain"
+                    onLoad={() => setImgStatus("ok")}
+                    onError={() => setImgStatus("error")}
+                  />
+                </a>
+              ) : (
+                <img
+                  key={id}
+                  src={api.grafanaUrl(id)}
+                  alt="Grafana dashboard analyzed by the vision agent"
+                  className="block w-full object-contain"
+                  onLoad={() => setImgStatus("ok")}
+                  onError={() => setImgStatus("error")}
+                />
+              )}
               {vision?.annotation && imgStatus === "ok" && (
                 <motion.div
                   initial={{ opacity: 0, y: 8 }}
