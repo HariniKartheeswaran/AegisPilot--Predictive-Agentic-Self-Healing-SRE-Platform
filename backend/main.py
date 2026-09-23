@@ -229,10 +229,11 @@ async def health(request: Request):
         "project": s.google_cloud_project or None,
         "vertex_location": s.vertex_location if s.use_vertex else None,
         "compute_location": s.google_cloud_location,
-        "backend": s.backend,
+            "backend": s.backend,
         "slack_configured": s.has_slack,
-        "prometheus_configured": s.has_prometheus,
-        "grafana_url": s.grafana_url or None,
+        # getattr: unit tests may stub Settings with SimpleNamespace
+        "prometheus_configured": bool(getattr(s, "has_prometheus", False)),
+        "grafana_url": (getattr(s, "grafana_url", None) or None),
     }
 
 
