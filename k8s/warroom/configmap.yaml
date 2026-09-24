@@ -24,6 +24,7 @@ data:
   K8S_REMEDIATE_DEPLOYMENTS: checkout-svc,cart-svc,payments-svc,aegis-warroom-blue,aegis-warroom-green
   PROMETHEUS_URL: http://3.111.113.151:9090
   GRAFANA_URL: http://3.111.113.151:3000
+  GRAFANA_DASHBOARD_PATH: /d/ad6nckx/aegispilot-dashboard
   HOST: 0.0.0.0
   PORT: "8080"
   GOOGLE_APPLICATION_CREDENTIALS: /var/secrets/google/gcp-sa.json

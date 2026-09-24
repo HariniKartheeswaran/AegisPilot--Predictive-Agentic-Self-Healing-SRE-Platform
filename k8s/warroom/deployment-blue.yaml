@@ -46,6 +46,9 @@ spec:
             - name: gcp-credentials
               mountPath: /var/secrets/google
               readOnly: true
+            - name: live-snapshot
+              mountPath: /app/backend/services/live_snapshot.py
+              subPath: live_snapshot.py
           readinessProbe:
             httpGet:
               path: /api/health
@@ -82,3 +85,6 @@ spec:
             items:
               - key: gcp-sa.json
                 path: gcp-sa.json
+        - name: live-snapshot
+          configMap:
+            name: warroom-live-snapshot

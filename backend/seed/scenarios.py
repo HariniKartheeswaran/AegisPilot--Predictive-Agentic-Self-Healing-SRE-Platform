@@ -169,18 +169,16 @@ def _payments_memory() -> IncidentMemory:
 SCENARIOS: list[Scenario] = [
     Scenario(
         key="checkout",
-        alert={"alert": "HighErrorRate", "service": "checkout-svc", "error_rate": "42%",
-               "grafana_snapshot": "backend/seed/grafana_checkout_spike.png"},
+        # No seed PNG — live Prom snapshot is attached when Prometheus is configured.
+        alert={"alert": "HighErrorRate", "service": "checkout-svc", "error_rate": "42%"},
         deploys=_checkout_deploys, logs=_checkout_logs, memory=_checkout_memory),
     Scenario(
         key="cart",
-        alert={"alert": "OOMKilled", "service": "cart-svc", "error_rate": "18%",
-               "grafana_snapshot": "backend/seed/grafana_cart_oom.png"},
+        alert={"alert": "OOMKilled", "service": "cart-svc", "error_rate": "18%"},
         deploys=_cart_deploys, logs=_cart_logs, memory=_cart_memory),
     Scenario(
         key="payments",
-        alert={"alert": "HighLatency", "service": "payments-svc", "error_rate": "9%",
-               "grafana_snapshot": "backend/seed/grafana_payments_latency.png"},
+        alert={"alert": "HighLatency", "service": "payments-svc", "error_rate": "9%"},
         deploys=_payments_deploys, logs=_payments_logs, memory=_payments_memory),
 ]
 

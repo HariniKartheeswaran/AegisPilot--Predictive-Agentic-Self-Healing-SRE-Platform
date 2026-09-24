@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -70,9 +71,28 @@ def _up_query(service: str) -> str:
 
 
 def explore_url(service: str, *, grafana_base: str, prom_datasource_uid: str = "") -> str:
-    """Grafana Explore deep-link (schemaVersion=1 panes) for live scrapes."""
+    """Deep-link into the live AegisPilot Grafana dashboard for ``service``.
+
+    Falls back to Explore (up + 5xx) when no dashboard path is configured.
+    """
     base = grafana_base.rstrip("/")
-    # Match the Diagnosis PNG: up + 5xx rate so "Open in Grafana" is never empty.
+    # Prefer Settings when present; else env / known live board UID.
+    s = get_settings()
+    dash = (
+        getattr(s, "grafana_dashboard_path", None)
+        or os.environ.get("GRAFANA_DASHBOARD_PATH")
+        or "/d/ad6nckx/aegispilot-dashboard"
+    ).strip()
+    if dash:
+        if not dash.startswith("/"):
+            dash = "/" + dash
+        # Same board teammates open in the browser; filter by service var.
+        svc = quote(service, safe="")
+        return (
+            f"{base}{dash}"
+            f"?orgId=1&from=now-1h&to=now&timezone=browser&refresh=10s"
+            f"&var-service={svc}"
+        )
     panes = {
         "aegis": {
             "datasource": "prometheus",

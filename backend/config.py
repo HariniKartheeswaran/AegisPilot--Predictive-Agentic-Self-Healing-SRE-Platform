@@ -74,7 +74,9 @@ class Settings(BaseSettings):
     # --- Live metrics / Grafana vision ---
     # When set, Fire/alerts without a screenshot get a real Prom-rendered PNG.
     prometheus_url: str = ""
-    grafana_url: str = ""  # e.g. http://3.111.113.151:3000 — Explore deep-links
+    grafana_url: str = ""  # e.g. http://3.111.113.151:3000
+    # Path of the live ops dashboard (Open in Grafana → this, not Explore).
+    grafana_dashboard_path: str = "/d/ad6nckx/aegispilot-dashboard"
 
     # --- Storage ---
     aegis_db_path: str = "aegisops.db"
@@ -125,6 +127,8 @@ class Settings(BaseSettings):
             os.environ["PROMETHEUS_URL"] = self.prometheus_url
         if self.grafana_url:
             os.environ["GRAFANA_URL"] = self.grafana_url
+        if self.grafana_dashboard_path:
+            os.environ["GRAFANA_DASHBOARD_PATH"] = self.grafana_dashboard_path
 
     @property
     def has_prometheus(self) -> bool:

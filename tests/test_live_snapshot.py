@@ -7,10 +7,10 @@ from backend.models import Alert
 
 def test_explore_url_contains_grafana_and_query():
     url = explore_url("checkout-svc", grafana_base="http://3.111.113.151:3000")
-    assert url.startswith("http://3.111.113.151:3000/explore")
-    # panes JSON is URL-encoded; checkout service must appear in the Explore link
-    assert "checkout-svc" in url
-    assert "http_requests_total" in url
+    # Live board (same URL teammates open), filtered to the alerted service
+    assert url.startswith("http://3.111.113.151:3000/d/ad6nckx/aegispilot-dashboard")
+    assert "var-service=checkout-svc" in url
+    assert "from=now-1h" in url
 
 
 def test_ensure_keeps_seed_when_live_prom_unreachable(monkeypatch):

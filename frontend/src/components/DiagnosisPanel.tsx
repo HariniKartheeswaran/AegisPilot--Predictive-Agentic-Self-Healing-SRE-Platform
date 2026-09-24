@@ -101,11 +101,11 @@ export default function DiagnosisPanel({ state }: { state: WarRoomState }) {
           ) : (
             <>
               {vision?.explore_url ? (
-                <a href={vision.explore_url} target="_blank" rel="noreferrer" title="Open live Grafana Explore">
+                <a href={vision.explore_url} target="_blank" rel="noreferrer" title="Open live AegisPilot Grafana dashboard">
                   <img
                     key={id}
                     src={api.grafanaUrl(id)}
-                    alt="Grafana dashboard analyzed by the vision agent"
+                    alt="Live metrics snapshot analyzed by the vision agent"
                     className="block w-full cursor-pointer object-contain"
                     onLoad={() => setImgStatus("ok")}
                     onError={() => setImgStatus("error")}
