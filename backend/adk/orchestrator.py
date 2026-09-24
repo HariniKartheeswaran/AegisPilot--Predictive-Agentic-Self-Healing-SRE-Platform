@@ -75,13 +75,22 @@ class AdkOrchestrator:
 
     # -------------------------------------------------------------- pipeline
     async def handle_alert(self, alert: Alert) -> Incident:
-        # Keep the demo scenario temporally fresh (bad deploy ~12 min ago) so
-        # Correlation confidence reflects a just-shipped regression, not a stale
-        # fixture. No-op cost is a handful of writes.
-        from backend.seed.seed_data import refresh_demo_timeline
+        # Seed timeline is for offline demo only. Live K8s mode must not rewrite
+        # HikariCP / OOM fixtures over real scrape state.
         from backend.services.live_snapshot import ensure_alert_snapshot
 
-        refresh_demo_timeline(self.deps.storage)
+        try:
+            from backend.services.live_fire import live_mode_enabled
+
+            if not live_mode_enabled():
+                from backend.seed.seed_data import refresh_demo_timeline
+
+                refresh_demo_timeline(self.deps.storage)
+        except Exception:
+            from backend.seed.seed_data import refresh_demo_timeline
+
+            refresh_demo_timeline(self.deps.storage)
+
         ensure_alert_snapshot(alert)
 
         incident = Incident(status=IncidentStatus.DETECTED, service=alert.service, alert=alert)

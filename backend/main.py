@@ -78,8 +78,10 @@ async def lifespan(app: FastAPI):
         log.info("seeded fixtures")
     else:
         log.info("fixtures already present; skipping seed")
-    if not (GRAFANA_IMG.exists() and CART_OUT.exists() and PAYMENTS_OUT.exists()):
-        generate_grafana_all()  # deterministic; renders all three scenario snapshots
+    # Skip demo seed PNGs when live Prometheus is configured (K8s / real metrics).
+    if not (settings.prometheus_url or "").strip():
+        if not (GRAFANA_IMG.exists() and CART_OUT.exists() and PAYMENTS_OUT.exists()):
+            generate_grafana_all()  # local/demo only
 
     gate = ApprovalGate()
     deps = Deps(storage=storage, gemini=gemini, hub=hub, gate=gate)
@@ -130,7 +132,33 @@ async def post_alert(alert: Alert, request: Request):
 
 @app.post("/api/demo/fire")
 async def demo_fire(request: Request):
-    """Fire the NEXT rotating demo scenario (checkout → cart → payments)."""
+    """Fire an incident.
+
+    Live K8s mode (REMEDIATION_MODE=kubernetes + PROMETHEUS_URL): spikes a real
+    scrape Deployment ERROR_RATE, generates /api/work load, ingests live logs —
+    no HikariCP seed fixtures.
+
+    Otherwise: rotating demo scenario (local / offline).
+    """
+    from backend.services.live_fire import live_mode_enabled, prepare_live_fire
+
+    storage = request.app.state.storage
+    if live_mode_enabled():
+        import asyncio
+
+        prepared = await asyncio.to_thread(prepare_live_fire, storage, "checkout-svc", 0.42)
+        alert = prepared["alert"]
+        await request.app.state.bus.publish(alert)
+        return {
+            "accepted": True,
+            "scenario": "live",
+            "service": alert.service,
+            "alert": alert.alert,
+            "error_rate": alert.error_rate,
+            "live": True,
+            "load": prepared.get("load"),
+        }
+
     sc = next_scenario()
     alert = Alert(**sc.alert)
     await request.app.state.bus.publish(alert)
@@ -281,16 +309,31 @@ async def grafana(incident_id: str, request: Request):
     if not (inc and inc.alert and (inc.alert.grafana_snapshot or (inc.alert.metadata or {}).get("grafana_snapshot_b64"))):
         raise HTTPException(404, "no snapshot for this incident")
 
+    meta = inc.alert.metadata or {}
     snap = inc.alert.grafana_snapshot
+    b64 = meta.get("grafana_snapshot_b64")
+    # Prefer live base64 over on-disk seed PNGs (demo images ship in the image).
+    seed_path = bool(snap) and ("backend/seed" in str(snap).replace("\\", "/"))
+    if b64 and (meta.get("snapshot_source") in ("prometheus", "grafana-render") or seed_path or not snap):
+        import base64
+
+        media = "image/png"
+        if snap and str(snap).lower().endswith((".jpg", ".jpeg")):
+            media = "image/jpeg"
+        return Response(content=base64.b64decode(b64), media_type=media)
+
     if snap:
         p = Path(snap)
         if not p.is_absolute():
             p = SEED_DIR.parent.parent / p
-        if p.exists():
+        if p.exists() and not seed_path:
+            media = "image/jpeg" if p.suffix.lower() in (".jpg", ".jpeg") else "image/png"
+            return FileResponse(p, media_type=media)
+        if p.exists() and seed_path and not b64:
+            # Last resort only when no live snapshot was captured.
             media = "image/jpeg" if p.suffix.lower() in (".jpg", ".jpeg") else "image/png"
             return FileResponse(p, media_type=media)
 
-    b64 = (inc.alert.metadata or {}).get("grafana_snapshot_b64")
     if b64:
         import base64
 

@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     grafana_url: str = ""  # e.g. http://3.111.113.151:3000
     # Path of the live ops dashboard (Open in Grafana → this, not Explore).
     grafana_dashboard_path: str = "/d/ad6nckx/aegispilot-dashboard"
+    # Optional Grafana service-account token for /render dashboard screenshots.
+    grafana_token: str = ""
+    # Loki base URL for live log fetch during diagnosis (Alloy ships here).
+    loki_url: str = ""
 
     # --- Storage ---
     aegis_db_path: str = "aegisops.db"
@@ -129,6 +133,10 @@ class Settings(BaseSettings):
             os.environ["GRAFANA_URL"] = self.grafana_url
         if self.grafana_dashboard_path:
             os.environ["GRAFANA_DASHBOARD_PATH"] = self.grafana_dashboard_path
+        if self.grafana_token:
+            os.environ["GRAFANA_TOKEN"] = self.grafana_token
+        if self.loki_url:
+            os.environ["LOKI_URL"] = self.loki_url
 
     @property
     def has_prometheus(self) -> bool:
