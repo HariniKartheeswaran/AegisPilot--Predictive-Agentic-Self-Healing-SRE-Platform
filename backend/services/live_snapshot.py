@@ -186,24 +186,38 @@ def capture_live_snapshot(service: str) -> Optional[dict[str, Any]]:
 
 
 def ensure_alert_snapshot(alert) -> Any:
-    """If alert has no snapshot, attach a live Prom PNG + explore URL in metadata."""
-    if getattr(alert, "grafana_snapshot", None):
-        s = get_settings()
+    """Attach a live Prom PNG when Prometheus is configured.
+
+    Demo / Fire scenarios ship with seed PNGs (``backend/seed/...``). Those are
+    only kept when live capture is unavailable — otherwise vision always sees
+    real cluster metrics, not the canned dashboard.
+    """
+    s = get_settings()
+    seed = getattr(alert, "grafana_snapshot", None)
+
+    def _attach_explore_only() -> Any:
         if s.grafana_url and "grafana_explore_url" not in (alert.metadata or {}):
             alert.metadata = dict(alert.metadata or {})
             alert.metadata["grafana_explore_url"] = explore_url(
                 alert.service, grafana_base=s.grafana_url
             )
         return alert
-    captured = capture_live_snapshot(alert.service)
-    if not captured:
-        return alert
-    alert.grafana_snapshot = captured["grafana_snapshot"]
-    meta = dict(alert.metadata or {})
-    if captured.get("grafana_explore_url"):
-        meta["grafana_explore_url"] = captured["grafana_explore_url"]
-    if captured.get("grafana_snapshot_b64"):
-        meta["grafana_snapshot_b64"] = captured["grafana_snapshot_b64"]
-    meta["snapshot_source"] = captured.get("source", "prometheus")
-    alert.metadata = meta
-    return alert
+
+    if (s.prometheus_url or "").strip():
+        captured = capture_live_snapshot(alert.service)
+        if captured:
+            alert.grafana_snapshot = captured["grafana_snapshot"]
+            meta = dict(alert.metadata or {})
+            if captured.get("grafana_explore_url"):
+                meta["grafana_explore_url"] = captured["grafana_explore_url"]
+            if captured.get("grafana_snapshot_b64"):
+                meta["grafana_snapshot_b64"] = captured["grafana_snapshot_b64"]
+            meta["snapshot_source"] = captured.get("source", "prometheus")
+            if seed and str(seed).startswith("backend/seed/"):
+                meta["seed_snapshot_replaced"] = str(seed)
+            alert.metadata = meta
+            return alert
+        # Live Prom failed — fall back to seed PNG if the demo attached one.
+        return _attach_explore_only() if seed else alert
+
+    return _attach_explore_only() if seed else alert

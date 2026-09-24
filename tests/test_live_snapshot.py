@@ -13,7 +13,8 @@ def test_explore_url_contains_grafana_and_query():
     assert "http_requests_total" in url
 
 
-def test_ensure_skips_when_snapshot_already_set(monkeypatch):
+def test_ensure_keeps_seed_when_live_prom_unreachable(monkeypatch):
+    """Seed demo PNG is only kept when live capture fails."""
     monkeypatch.setenv("PROMETHEUS_URL", "http://example.invalid:9090")
     monkeypatch.setenv("GRAFANA_URL", "http://3.111.113.151:3000")
     from backend.config import get_settings
@@ -27,6 +28,37 @@ def test_ensure_skips_when_snapshot_already_set(monkeypatch):
     out = ensure_alert_snapshot(alert)
     assert out.grafana_snapshot == "backend/seed/grafana_checkout_spike.png"
     assert "grafana_explore_url" in out.metadata
+    get_settings.cache_clear()
+
+
+def test_ensure_replaces_seed_with_live(monkeypatch):
+    monkeypatch.setenv("PROMETHEUS_URL", "http://prom.example:9090")
+    monkeypatch.setenv("GRAFANA_URL", "http://3.111.113.151:3000")
+    from backend.config import get_settings
+
+    get_settings.cache_clear()
+
+    def _fake_capture(service: str):
+        return {
+            "grafana_snapshot": f"/tmp/aegis_snapshots/{service}_live.png",
+            "grafana_explore_url": "http://3.111.113.151:3000/explore?x=1",
+            "grafana_snapshot_b64": "aGVsbG8=",
+            "source": "prometheus",
+        }
+
+    monkeypatch.setattr(
+        "backend.services.live_snapshot.capture_live_snapshot", _fake_capture
+    )
+    alert = Alert(
+        alert="HighErrorRate",
+        service="checkout-svc",
+        grafana_snapshot="backend/seed/grafana_checkout_spike.png",
+    )
+    out = ensure_alert_snapshot(alert)
+    assert out.grafana_snapshot == "/tmp/aegis_snapshots/checkout-svc_live.png"
+    assert out.metadata.get("snapshot_source") == "prometheus"
+    assert out.metadata.get("grafana_snapshot_b64") == "aGVsbG8="
+    assert "seed_snapshot_replaced" in out.metadata
     get_settings.cache_clear()
 
 
