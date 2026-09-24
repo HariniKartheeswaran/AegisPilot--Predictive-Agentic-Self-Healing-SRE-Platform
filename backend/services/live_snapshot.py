@@ -1,12 +1,20 @@
 """Live Grafana/Prom snapshot for Diagnosis vision.
 
-When an alert has no ``grafana_snapshot``, pull real Prometheus series and render
-a dark Grafana-style PNG the vision agent can read. Also builds a Grafana Explore
-deep-link so the War Room UI can open the same query.
+Pulls the same Prometheus series as the AegisPilot Grafana board and renders a
+4-panel dark PNG (request rate · errors · avg latency · p95) for Gemini vision.
+Also attaches an Open-in-Grafana deep-link to the live dashboard.
+
+Optional: set GRAFANA_TOKEN to prefer a real Grafana /render screenshot when the
+image-renderer plugin is installed; otherwise the Prom 4-panel PNG is used.
+
+Snapshots live under ``/tmp/aegis_snapshots`` plus base64 on alert.metadata so
+the UI survives pod recycle.
 """
 from __future__ import annotations
 
+import base64
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,7 +28,7 @@ matplotlib.use("Agg")
 import matplotlib.dates as mdates  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
 
-from backend.config import SEED_DIR, get_settings
+from backend.config import get_settings
 
 log = logging.getLogger("aegisops.live_snapshot")
 
@@ -28,48 +36,74 @@ BG = "#0b0e14"
 PANEL = "#12161f"
 GRID = "#2a3242"
 TEXT = "#c7d0e0"
-GREEN = "#3fb950"
+GREEN = "#3fb950"   # cart
+YELLOW = "#d29922"  # checkout
+BLUE = "#58a6ff"    # payments
+ORANGE = "#f0883e"  # 5xx
 RED = "#f85149"
-BLUE = "#58a6ff"
 AMBER = "#d29922"
 
-LIVE_DIR = SEED_DIR / "live"
-
-# service name → Prometheus label matcher used by our scrape jobs
-_SERVICE_MATCH = {
-    "checkout-svc": 'service="checkout-svc"',
-    "cart-svc": 'service="cart-svc"',
-    "payments-svc": 'service="payments-svc"',
+SNAP_DIR = Path("/tmp/aegis_snapshots")
+_SCRAPE_SERVICES = {"checkout-svc", "cart-svc", "payments-svc"}
+_SVC_COLOR = {
+    "cart-svc": GREEN,
+    "checkout-svc": YELLOW,
+    "payments-svc": BLUE,
 }
 
 
-def explore_url(service: str, *, grafana_base: str, prom_datasource_uid: str = "") -> str:
-    """Grafana Explore URL for the live up query (same data as scrapes)."""
-    base = grafana_base.rstrip("/")
-    left = 'up{job=~"aegis-.*"}'
-    org = "1"
-    query = quote(left, safe="")
-    return (
-        f"{base}/explore?orgId={org}&left="
-        f"%5B%22now-1h%22,%22now%22,%22prometheus%22,%7B%22expr%22:%22{query}%22%7D%5D"
-    )
+def _sel(service: str) -> str:
+    if service in _SCRAPE_SERVICES:
+        return f'service="{service}"'
+    return 'job=~"aegis-.*"'
 
 
 def _error_rate_query(service: str) -> str:
-    matcher = _SERVICE_MATCH.get(service, f'service="{service}"')
+    sel = _sel(service)
     return (
-        f'sum(rate(http_requests_total{{{matcher},code=~"5.."}}[1m])) '
-        f'/ clamp_min(sum(rate(http_requests_total{{{matcher}}}[1m])), 1e-9) * 100'
+        f"("
+        f'sum(rate(http_requests_total{{{sel},code=~"5.."}}[1m])) '
+        f'or vector(0)'
+        f") "
+        f"/ "
+        f"clamp_min("
+        f'sum(rate(http_requests_total{{{sel}}}[1m])) or vector(1e-9)'
+        f", 1e-9) * 100"
     )
 
 
 def _up_query(service: str) -> str:
-    if service in _SERVICE_MATCH:
-        return f'up{{{_SERVICE_MATCH[service]}}}'
+    if service in _SCRAPE_SERVICES:
+        return f'up{{service="{service}"}}'
     return 'up{job=~"aegis-.*"}'
 
 
-def _query_range(prom_url: str, query: str, minutes: int = 60, step: str = "15s") -> list[tuple[float, float]]:
+def explore_url(service: str, *, grafana_base: str, prom_datasource_uid: str = "") -> str:
+    """Deep-link into the live AegisPilot Grafana dashboard (never Explore panes).
+
+    Explore ``panes=`` URLs break on current Grafana ("Could not parse Explore URL").
+    """
+    del prom_datasource_uid  # unused; kept for call-site compatibility
+    base = grafana_base.rstrip("/")
+    s = get_settings()
+    dash = (
+        getattr(s, "grafana_dashboard_path", None)
+        or os.environ.get("GRAFANA_DASHBOARD_PATH")
+        or "/d/ad6nckx/aegispilot-dashboard"
+    ).strip() or "/d/ad6nckx/aegispilot-dashboard"
+    if not dash.startswith("/"):
+        dash = "/" + dash
+    svc = quote(service, safe="")
+    return (
+        f"{base}{dash}"
+        f"?orgId=1&from=now-1h&to=now&timezone=browser&refresh=10s"
+        f"&var-service={svc}"
+    )
+
+
+def _query_range(
+    prom_url: str, query: str, minutes: int = 60, step: str = "15s"
+) -> list[tuple[float, float]]:
     end = time.time()
     start = end - minutes * 60
     url = f"{prom_url.rstrip('/')}/api/v1/query_range"
@@ -82,103 +116,222 @@ def _query_range(prom_url: str, query: str, minutes: int = 60, step: str = "15s"
     result = body.get("data", {}).get("result") or []
     if not result:
         return []
-    # Merge first series (or max across series for up)
-    points: list[tuple[float, float]] = []
+    by_ts: dict[float, list[float]] = {}
     for series in result:
         for ts, val in series.get("values") or []:
             try:
-                points.append((float(ts), float(val)))
+                t, v = float(ts), float(val)
             except (TypeError, ValueError):
                 continue
-    points.sort(key=lambda p: p[0])
-    return points
+            by_ts.setdefault(t, []).append(v)
+    return sorted((t, sum(vs) / len(vs)) for t, vs in by_ts.items())
 
 
-def _render_png(
+def _style_ax(ax, title: str, ylabel: str) -> None:
+    ax.set_facecolor(PANEL)
+    ax.set_title(title, color=TEXT, fontsize=10, loc="left", fontweight="bold", pad=6)
+    ax.grid(True, color=GRID, linewidth=0.5, alpha=0.55)
+    ax.tick_params(colors=TEXT, labelsize=7)
+    for spine in ax.spines.values():
+        spine.set_color(GRID)
+    ax.set_ylabel(ylabel, color=TEXT, fontsize=8)
+
+
+def _plot_line(ax, pts: list[tuple[float, float]], color: str, label: str = "") -> None:
+    if not pts:
+        ax.text(0.5, 0.5, "no series", transform=ax.transAxes, ha="center",
+                color=AMBER, fontsize=9)
+        return
+    xs = [mdates.date2num(datetime.fromtimestamp(t, tz=timezone.utc)) for t, _ in pts]
+    ys = [v for _, v in pts]
+    ax.plot(xs, ys, color=color, linewidth=1.6, label=label or None)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+    if label:
+        ax.legend(loc="upper right", fontsize=7, facecolor=PANEL, edgecolor=GRID, labelcolor=TEXT)
+
+
+def _render_dashboard_png(
     service: str,
-    up_pts: list[tuple[float, float]],
+    rate_pts: list[tuple[float, float]],
+    ok_pts: list[tuple[float, float]],
     err_pts: list[tuple[float, float]],
+    avg_pts: list[tuple[float, float]],
+    p95_pts: list[tuple[float, float]],
     out: Path,
 ) -> Path:
-    fig, axes = plt.subplots(2, 1, figsize=(10.5, 5.6), sharex=True)
+    """4-panel layout mirroring AegisPilot Dashboard (live Prom data)."""
+    color = _SVC_COLOR.get(service, YELLOW)
+    fig, axes = plt.subplots(2, 2, figsize=(11.2, 6.2), sharex=True)
     fig.patch.set_facecolor(BG)
 
-    def _plot(ax, pts: list[tuple[float, float]], title: str, color: str, ylabel: str) -> None:
-        ax.set_facecolor(PANEL)
-        ax.set_title(title, color=TEXT, fontsize=11, loc="left", fontweight="bold", pad=8)
-        ax.grid(True, color=GRID, linewidth=0.6, alpha=0.6)
-        ax.tick_params(colors=TEXT, labelsize=8)
-        for spine in ax.spines.values():
-            spine.set_color(GRID)
-        ax.set_ylabel(ylabel, color=TEXT, fontsize=9)
-        if not pts:
-            ax.text(0.5, 0.5, "no series", transform=ax.transAxes, ha="center",
-                    color=AMBER, fontsize=10)
-            return
-        xs = [mdates.date2num(datetime.fromtimestamp(t, tz=timezone.utc)) for t, _ in pts]
-        ys = [v for _, v in pts]
-        ax.plot(xs, ys, color=color, linewidth=1.8)
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+    _style_ax(axes[0, 0], "HTTP Request Rate", "req/s")
+    _plot_line(axes[0, 0], rate_pts, color, service)
 
-    _plot(axes[0], up_pts, f"{service} · up (live Prometheus)", GREEN, "up")
-    _plot(axes[1], err_pts, f"{service} · 5xx error rate % (live)", RED, "error %")
-    fig.suptitle("AegisPilot live metrics · Prometheus", color=TEXT, fontsize=12, fontweight="bold", y=0.98)
+    _style_ax(axes[0, 1], "HTTP Success / 5xx rate", "req/s")
+    _plot_line(axes[0, 1], ok_pts, color, f'{service} 200')
+    _plot_line(axes[0, 1], err_pts, ORANGE, f'{service} 5xx')
+    if ok_pts or err_pts:
+        axes[0, 1].legend(loc="upper right", fontsize=7, facecolor=PANEL, edgecolor=GRID, labelcolor=TEXT)
+
+    _style_ax(axes[1, 0], "Average Request Duration", "ms")
+    avg_ms = [(t, v * 1000.0) for t, v in avg_pts]
+    _plot_line(axes[1, 0], avg_ms, color, service)
+
+    _style_ax(axes[1, 1], "P95 Request Latency", "s")
+    _plot_line(axes[1, 1], p95_pts, color, service)
+
+    fig.suptitle(
+        f"AegisPilot Dashboard · {service} · live Prometheus",
+        color=TEXT, fontsize=12, fontweight="bold", y=0.98,
+    )
     fig.autofmt_xdate()
-    fig.subplots_adjust(left=0.09, right=0.97, top=0.90, bottom=0.08, hspace=0.28)
+    fig.subplots_adjust(left=0.07, right=0.98, top=0.90, bottom=0.08, hspace=0.32, wspace=0.22)
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, dpi=130, facecolor=BG)
     plt.close(fig)
     return out
 
 
+def _try_grafana_render(service: str, grafana_base: str, token: str) -> Optional[bytes]:
+    """Best-effort real Grafana dashboard PNG (needs API token + image renderer)."""
+    s = get_settings()
+    dash = (
+        getattr(s, "grafana_dashboard_path", None)
+        or os.environ.get("GRAFANA_DASHBOARD_PATH")
+        or "/d/ad6nckx/aegispilot-dashboard"
+    ).strip()
+    if not dash.startswith("/"):
+        dash = "/" + dash
+    # /d/UID/slug → /render/d/UID/slug
+    render_path = "/render" + dash if dash.startswith("/d/") else f"/render{dash}"
+    url = (
+        f"{grafana_base.rstrip('/')}{render_path}"
+        f"?orgId=1&from=now-1h&to=now&width=1200&height=700"
+        f"&tz=UTC&var-service={quote(service, safe='')}"
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+    with httpx.Client(timeout=25.0, follow_redirects=False) as client:
+        r = client.get(url, headers=headers)
+        if r.status_code != 200 or not r.content.startswith(b"\x89PNG"):
+            log.warning("grafana render unavailable status=%s bytes=%d", r.status_code, len(r.content))
+            return None
+        return r.content
+
+
 def capture_live_snapshot(service: str) -> Optional[dict[str, Any]]:
-    """Fetch Prom + render PNG. Returns paths/urls or None if Prom unset/unreachable."""
+    """Fetch live metrics + render PNG. Prefers Grafana render when token set."""
     s = get_settings()
     prom = (s.prometheus_url or "").strip()
     if not prom:
         return None
     grafana = (s.grafana_url or "").strip()
+    token = (
+        getattr(s, "grafana_token", None)
+        or os.environ.get("GRAFANA_TOKEN")
+        or ""
+    ).strip()
     try:
-        up_pts = _query_range(prom, _up_query(service))
-        err_pts = _query_range(prom, _error_rate_query(service))
-        # Fallback: all aegis ups if service-specific empty
-        if not up_pts:
-            up_pts = _query_range(prom, 'up{job=~"aegis-.*"}')
         stamp = int(time.time() * 1000)
-        rel = Path("backend/seed/live") / f"{service}_{stamp}.png"
-        abs_path = SEED_DIR.parent.parent / rel
-        _render_png(service, up_pts, err_pts, abs_path)
+        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in service)
+        abs_path = SNAP_DIR / f"{safe}_{stamp}.png"
+        abs_path.parent.mkdir(parents=True, exist_ok=True)
+        source = "prometheus"
+
+        rendered: Optional[bytes] = None
+        if grafana and token:
+            rendered = _try_grafana_render(service, grafana, token)
+            if rendered:
+                abs_path.write_bytes(rendered)
+                source = "grafana-render"
+
+        if rendered is None:
+            sel = _sel(service)
+            rate_pts = _query_range(prom, f'sum(rate(http_requests_total{{{sel}}}[1m])) or vector(0)')
+            ok_pts = _query_range(
+                prom, f'sum(rate(http_requests_total{{{sel},code=~"2.."}}[1m])) or vector(0)'
+            )
+            err5_pts = _query_range(
+                prom, f'sum(rate(http_requests_total{{{sel},code=~"5.."}}[1m])) or vector(0)'
+            )
+            avg_pts = _query_range(
+                prom,
+                f"("
+                f'sum(rate(http_request_duration_seconds_sum{{{sel}}}[1m])) '
+                f"/ "
+                f'clamp_min(sum(rate(http_request_duration_seconds_count{{{sel}}}[1m])), 1e-9)'
+                f") or vector(0)",
+            )
+            p95_pts = _query_range(
+                prom,
+                f"histogram_quantile(0.95, "
+                f"sum by (le) (rate(http_request_duration_seconds_bucket{{{sel}}}[1m]))) "
+                f"or vector(0)",
+            )
+            # Fallback: if request series empty, still show up + 5xx %
+            if not rate_pts and not err5_pts:
+                up_pts = _query_range(prom, _up_query(service)) or _query_range(
+                    prom, 'up{job=~"aegis-.*"}'
+                )
+                pct_pts = _query_range(prom, _error_rate_query(service))
+                _render_dashboard_png(service, up_pts, [], pct_pts, [], [], abs_path)
+            else:
+                _render_dashboard_png(
+                    service, rate_pts, ok_pts, err5_pts, avg_pts, p95_pts, abs_path
+                )
+
+        raw = abs_path.read_bytes()
         link = explore_url(service, grafana_base=grafana) if grafana else ""
-        log.info("live snapshot for %s → %s (up=%d err=%d pts)",
-                 service, rel, len(up_pts), len(err_pts))
+        log.info(
+            "live snapshot for %s → %s (%s, %d bytes)",
+            service, abs_path, source, len(raw),
+        )
         return {
-            "grafana_snapshot": str(rel).replace("\\", "/"),
+            "grafana_snapshot": str(abs_path),
             "grafana_explore_url": link,
-            "source": "prometheus",
+            "grafana_snapshot_b64": base64.b64encode(raw).decode("ascii"),
+            "source": source,
         }
-    except Exception:  # noqa: BLE001 — never block the incident pipeline
+    except Exception:  # noqa: BLE001
         log.exception("live snapshot failed for service=%s", service)
         return None
 
 
 def ensure_alert_snapshot(alert) -> Any:
-    """If alert has no snapshot, attach a live Prom PNG + explore URL in metadata."""
-    if getattr(alert, "grafana_snapshot", None):
-        # Still attach explore link when Grafana URL is configured.
-        s = get_settings()
+    """Attach a live Prom/Grafana PNG when Prometheus is configured."""
+    s = get_settings()
+    seed = getattr(alert, "grafana_snapshot", None)
+
+    def _attach_explore_only() -> Any:
         if s.grafana_url and "grafana_explore_url" not in (alert.metadata or {}):
             alert.metadata = dict(alert.metadata or {})
             alert.metadata["grafana_explore_url"] = explore_url(
                 alert.service, grafana_base=s.grafana_url
             )
         return alert
-    captured = capture_live_snapshot(alert.service)
-    if not captured:
-        return alert
-    alert.grafana_snapshot = captured["grafana_snapshot"]
-    meta = dict(alert.metadata or {})
-    if captured.get("grafana_explore_url"):
-        meta["grafana_explore_url"] = captured["grafana_explore_url"]
-    meta["snapshot_source"] = captured.get("source", "prometheus")
-    alert.metadata = meta
-    return alert
+
+    def _is_seed_path(path: Any) -> bool:
+        return bool(path) and "backend/seed" in str(path).replace("\\", "/")
+
+    if (s.prometheus_url or "").strip():
+        captured = capture_live_snapshot(alert.service)
+        if captured:
+            alert.grafana_snapshot = captured["grafana_snapshot"]
+            meta = dict(alert.metadata or {})
+            if captured.get("grafana_explore_url"):
+                meta["grafana_explore_url"] = captured["grafana_explore_url"]
+            if captured.get("grafana_snapshot_b64"):
+                meta["grafana_snapshot_b64"] = captured["grafana_snapshot_b64"]
+            meta["snapshot_source"] = captured.get("source", "prometheus")
+            if _is_seed_path(seed):
+                meta["seed_snapshot_replaced"] = str(seed)
+            alert.metadata = meta
+            return alert
+        # Do not keep demo seed PNGs when live Prom is configured but capture failed.
+        if _is_seed_path(seed):
+            alert.grafana_snapshot = None
+        return _attach_explore_only()
+
+    if _is_seed_path(seed) and (s.grafana_url or "").strip():
+        # Still attach a dashboard link even if we refuse to show seed art.
+        return _attach_explore_only()
+    return _attach_explore_only() if seed else alert

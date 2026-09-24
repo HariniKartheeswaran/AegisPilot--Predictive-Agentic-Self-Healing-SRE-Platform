@@ -27,7 +27,7 @@ _CLASS_RULES: list[tuple[str, re.Pattern]] = [
     ("slo_breach", re.compile(r"slo|error rate .* exceeds|5xx (error )?rate|latency slo", re.I)),
     ("connection_leak", re.compile(r"connection leak", re.I)),
     ("autoscale", re.compile(r"autoscal|added \d+ pods|scaled|restarted pod|pod restart", re.I)),
-    ("server_error", re.compile(r"\b5\d\d\b|internal server error|unhandled exception", re.I)),
+    ("server_error", re.compile(r"\b5\d\d\b|internal server error|unhandled exception|request_failed", re.I)),
     ("healthcheck", re.compile(r"healthcheck|degraded", re.I)),
 ]
 
@@ -44,6 +44,16 @@ def classify_log_line(message: str, level: str) -> str:
 
 
 def fetch_logs(storage: StorageService, service: str, limit: int = 200) -> list[LogLine]:
+    """Prefer live Loki/K8s logs when running against the cluster; else storage."""
+    try:
+        from backend.services.live_fire import fetch_live_log_lines, live_mode_enabled
+
+        if live_mode_enabled():
+            live = fetch_live_log_lines(service, limit=min(limit, 120))
+            if live:
+                return live
+    except Exception:
+        pass
     return storage.logs_for_service(service, limit=limit)
 
 

@@ -46,6 +46,27 @@ spec:
             - name: gcp-credentials
               mountPath: /var/secrets/google
               readOnly: true
+            - name: live-snapshot
+              mountPath: /app/backend/services/live_snapshot.py
+              subPath: live_snapshot.py
+            - name: live-snapshot
+              mountPath: /app/backend/seed/scenarios.py
+              subPath: scenarios.py
+            - name: live-snapshot
+              mountPath: /app/backend/main.py
+              subPath: main.py
+            - name: live-snapshot
+              mountPath: /app/backend/services/live_fire.py
+              subPath: live_fire.py
+            - name: live-snapshot
+              mountPath: /app/backend/tools/diagnosis.py
+              subPath: diagnosis.py
+            - name: live-snapshot
+              mountPath: /app/backend/adk/orchestrator.py
+              subPath: adk_orchestrator.py
+            - name: live-snapshot
+              mountPath: /app/backend/config.py
+              subPath: config.py
           readinessProbe:
             httpGet:
               path: /api/health
@@ -82,3 +103,6 @@ spec:
             items:
               - key: gcp-sa.json
                 path: gcp-sa.json
+        - name: live-snapshot
+          configMap:
+            name: warroom-live-snapshot

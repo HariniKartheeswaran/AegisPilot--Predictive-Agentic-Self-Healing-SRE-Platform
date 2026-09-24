@@ -35,6 +35,8 @@ async def test_health_returns_application_configuration():
         google_cloud_location="us-central1",
         backend="local",
         has_slack=False,
+        has_prometheus=False,
+        grafana_url="",
     )
 
     app_state = SimpleNamespace(
@@ -60,6 +62,8 @@ async def test_health_returns_application_configuration():
         "compute_location": "us-central1",
         "backend": "local",
         "slack_configured": False,
+        "prometheus_configured": False,
+        "grafana_url": None,
     }
 
 @pytest.mark.asyncio
