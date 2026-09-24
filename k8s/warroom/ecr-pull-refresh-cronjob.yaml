@@ -1,0 +1,59 @@
+# Refresh ECR dockerconfig so ImagePullBackOff does not recur (~12h token life).
+# Apply after creating Secret aws-ecr-refresh (access key with ecr:GetAuthorizationToken).
+#   kubectl -n aegispilot create secret generic aws-ecr-refresh \
+#     --from-literal=AWS_ACCESS_KEY_ID=... \
+#     --from-literal=AWS_SECRET_ACCESS_KEY=... \
+#     --from-literal=AWS_DEFAULT_REGION=ap-south-1
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ecr-pull-refresh
+  namespace: aegispilot
+  labels:
+    app: ecr-pull-refresh
+    team: aegis
+spec:
+  schedule: "0 */6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: aegis-warroom
+          containers:
+            - name: refresh
+              image: public.ecr.aws/aws-cli/aws-cli:2.15.30
+              imagePullPolicy: IfNotPresent
+              envFrom:
+                - secretRef:
+                    name: aws-ecr-refresh
+              env:
+                - name: ECR_REGISTRY
+                  value: 850887971586.dkr.ecr.ap-south-1.amazonaws.com
+                - name: NAMESPACE
+                  value: aegispilot
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -eu
+                  TOKEN=$(aws ecr get-login-password --region "${AWS_DEFAULT_REGION:-ap-south-1}")
+                  AUTH=$(printf 'AWS:%s' "$TOKEN" | base64 | tr -d '\n')
+                  # kubectl is not in aws-cli image — patch via Kubernetes API with curl + SA token
+                  DOCKERCFG=$(printf '{"auths":{"%s":{"username":"AWS","password":"%s","auth":"%s"}}}' \
+                    "$ECR_REGISTRY" "$TOKEN" "$AUTH")
+                  B64=$(printf '%s' "$DOCKERCFG" | base64 | tr -d '\n')
+                  APISERVER=https://kubernetes.default.svc
+                  CACERT=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+                  BEARER=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+                  BODY=$(printf '{"data":{".dockerconfigjson":"%s"}}' "$B64")
+                  curl -sS --fail --cacert "$CACERT" -H "Authorization: Bearer $BEARER" \
+                    -H "Content-Type: application/strategic-merge-patch+json" \
+                    -X PATCH \
+                    -d "$BODY" \
+                    "$APISERVER/api/v1/namespaces/${NAMESPACE}/secrets/ecr-pull"
+                  echo "ecr-pull refreshed"
