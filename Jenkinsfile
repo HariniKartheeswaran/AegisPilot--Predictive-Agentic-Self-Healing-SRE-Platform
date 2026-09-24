@@ -27,7 +27,7 @@ pipeline {
 
         string(
             name: 'K8S_COMMIT',
-            defaultValue: 'f3923b13f86fd55c6af269faff6ba4de12a91110',
+            defaultValue: '63520568e7d690dd7da11d900878002e469b2c9e',
             trim: true,
             description: 'Reviewed feature/k8s commit used as read-only deployment assets.'
         )
