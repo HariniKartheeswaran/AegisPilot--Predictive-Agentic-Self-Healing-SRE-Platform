@@ -245,13 +245,13 @@ def prepare_live_fire(
             "LATENCY_MS": "40",
         },
     )
-    _wait_ready(apps, ns, service, timeout_s=90.0)
+    _wait_ready(apps, ns, service, timeout_s=60.0)
 
-    # Let Prom scrape at least one interval, then generate 5xx traffic.
-    time.sleep(3.0)
-    load = _generate_load(service, bursts=100)
+    # Brief scrape settle, then generate 5xx traffic.
     time.sleep(2.0)
-    load2 = _generate_load(service, bursts=40)
+    load = _generate_load(service, bursts=60)
+    time.sleep(1.0)
+    load2 = _generate_load(service, bursts=30)
     load = {
         "ok": load["ok"] + load2["ok"],
         "err": load["err"] + load2["err"],

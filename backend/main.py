@@ -165,6 +165,34 @@ async def demo_fire(request: Request):
     return {"accepted": True, "scenario": sc.key, "service": alert.service, "alert": alert.alert}
 
 
+@app.post("/api/deploys")
+async def record_deploy(
+    request: Request,
+    service: str = Form(...),
+    version: str = Form(...),
+    commit_sha: str = Form(""),
+    deployed_by: str = Form("jenkins-ci"),
+    rollback_target: str = Form(""),
+):
+    """Record a deploy for Correlation only — does NOT open an incident.
+
+    Jenkins must call this (not /api/incidents/custom) after a promote.
+    """
+    storage = request.app.state.storage
+    t = now_ms()
+    dep = Deploy(
+        id=f"dep_{service}_{t}",
+        service=service,
+        version=version,
+        deployed_at=t,
+        deployed_by=deployed_by,
+        commit_sha=(commit_sha or "unknown")[:12],
+        rollback_target=(rollback_target.strip() or None),
+    )
+    storage.add_deploy(dep)
+    return {"accepted": True, "deploy_id": dep.id, "service": service, "version": version}
+
+
 @app.post("/api/incidents/custom")
 async def custom_incident(
     request: Request,

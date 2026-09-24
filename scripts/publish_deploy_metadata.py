@@ -109,18 +109,19 @@ def publish_remote_http(
     if not rollback_target:
         rollback_target = "blue" if color.lower() == "green" else "green"
 
-    endpoint = url.rstrip("/") + "/api/incidents/custom"
+    endpoint = url.rstrip("/") + "/api/deploys"
     payload = {
         "service": service,
-        "deploy_version": version,
-        "rollback_target": rollback_target,
-        "logs": f"Deployment finished for {service} version {version} commit {commit_sha}",
+        "version": version,
+        "commit_sha": commit_sha,
+        "deployed_by": deployed_by,
+        "rollback_target": rollback_target or "",
     }
     try:
         with httpx.Client(timeout=10.0) as client:
             resp = client.post(endpoint, data=payload)
             if resp.status_code in (200, 201, 204):
-                print(f"[METADATA] Successfully published to remote {endpoint}")
+                print(f"[METADATA] Successfully published deploy to {endpoint}")
                 return True
             print(f"[METADATA-WARN] Remote returned status {resp.status_code}: {resp.text}", file=sys.stderr)
             return False
