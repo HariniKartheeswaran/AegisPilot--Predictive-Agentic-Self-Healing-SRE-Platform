@@ -5,9 +5,11 @@ Modes (env ``REMEDIATION_MODE``):
     tagged ``simulated=True``. Never claims to have touched prod.
   - ``kubernetes``: real in-cluster (or kubeconfig) mutations against allowlisted
     Deployments in ``K8S_NAMESPACE``. Steps tagged ``simulated=False``.
+  - ``docker``: real HTTP ``/admin/fault`` against Compose scrape services
+    (same images as K8s). Steps tagged ``simulated=False``.
 
-Honesty rule: the mode is explicit. Kubernetes mode fails loudly if the API
-call fails — it does not silently fall back to simulation.
+Honesty rule: the mode is explicit. Kubernetes/docker modes fail loudly if the
+API call fails — they do not silently fall back to simulation.
 """
 from __future__ import annotations
 
@@ -330,11 +332,94 @@ async def _execute_simulate(plan: RemediationPlan, service: str) -> ExecResult:
     )
 
 
+def _scrape_base(service: str) -> str:
+    env_key = {
+        "checkout-svc": "SCRAPE_URL_CHECKOUT",
+        "cart-svc": "SCRAPE_URL_CART",
+        "payments-svc": "SCRAPE_URL_PAYMENTS",
+    }.get(service, "")
+    if env_key:
+        explicit = (os.getenv(env_key) or "").strip().rstrip("/")
+        if explicit:
+            return explicit
+    return f"http://{service}:8080"
+
+
+async def _execute_docker(plan: RemediationPlan, service: str) -> ExecResult:
+    """Heal a Compose scrape service via /admin/fault (shared scrape image)."""
+    import httpx
+
+    steps: list[ExecStep] = []
+    target = service if service in _allowlist() else ""
+    if not target:
+        # Map war-room slot names are k8s-only; docker remediates scrape tier.
+        if service in ("checkout-svc", "cart-svc", "payments-svc"):
+            target = service
+        else:
+            steps.append(ExecStep(label="Allowlist check", ok=False,
+                                  detail=f"{service} is not a docker scrape target"))
+            return ExecResult(ok=False, action=plan.action, target=service,
+                              steps=steps, simulated=False)
+
+    base = _scrape_base(target)
+
+    def add(label: str, ok: bool, detail: str = "") -> None:
+        steps.append(ExecStep(label=label, ok=ok, detail=detail))
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            if plan.action == "rollback":
+                ver = plan.rollback_target or "v1.0.0"
+                add("Select rollback target", True, f"Known-good {ver}")
+                r = await client.post(
+                    f"{base}/admin/fault",
+                    json={
+                        "error_rate": 0.0,
+                        "latency_ms": 20,
+                        "fail_ready": False,
+                        "service_version": ver,
+                    },
+                )
+                r.raise_for_status()
+                add("Clear injected fault", True, f"POST {base}/admin/fault")
+                add("Restore service version", True, ver)
+            elif plan.action == "restart":
+                r = await client.post(
+                    f"{base}/admin/fault",
+                    json={"error_rate": 0.0, "fail_ready": False},
+                )
+                r.raise_for_status()
+                add("Clear fault / soft restart", True, f"POST {base}/admin/fault")
+            else:
+                # scale_out / flag_off: clear fault as the practical docker heal
+                r = await client.post(
+                    f"{base}/admin/fault",
+                    json={"error_rate": 0.0, "fail_ready": False},
+                )
+                r.raise_for_status()
+                add(f"Execute {plan.action}", True, f"Cleared fault on {target}")
+
+            health = await client.get(f"{base}/health")
+            health.raise_for_status()
+            add("Verify health", True, f"GET {base}/health → {health.status_code}")
+    except Exception as exc:
+        add("Docker scrape API error", False, str(exc))
+        return ExecResult(ok=False, action=plan.action, target=target,
+                          steps=steps, simulated=False)
+
+    return ExecResult(
+        ok=all(s.ok for s in steps), action=plan.action,
+        target=target, steps=steps, simulated=False,
+    )
+
+
 async def execute_remediation(plan: RemediationPlan, service: str) -> ExecResult:
-    """Run the plan under ``REMEDIATION_MODE`` (simulate | kubernetes)."""
+    """Run the plan under ``REMEDIATION_MODE`` (simulate | kubernetes | docker)."""
     mode = _mode()
     if mode in ("kubernetes", "k8s"):
         return await _execute_kubernetes(plan, service)
+    if mode == "docker":
+        return await _execute_docker(plan, service)
     if mode not in ("simulate", "simulation", "sim", ""):
         log.warning("unknown REMEDIATION_MODE=%r; falling back to simulate", mode)
     return await _execute_simulate(plan, service)

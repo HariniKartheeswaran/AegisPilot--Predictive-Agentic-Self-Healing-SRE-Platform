@@ -1,4 +1,6 @@
 FROM python:3.11-slim
+# Shared scrape image for Compose + K8s/ECR (aegispilot/scrape).
+# Build: docker build -t aegispilot/scrape:local docker/scrape
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PORT=8080 \

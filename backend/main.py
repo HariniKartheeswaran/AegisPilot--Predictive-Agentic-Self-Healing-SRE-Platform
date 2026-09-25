@@ -134,9 +134,9 @@ async def post_alert(alert: Alert, request: Request):
 async def demo_fire(request: Request):
     """Fire an incident.
 
-    Live K8s mode (REMEDIATION_MODE=kubernetes + PROMETHEUS_URL): spikes a real
-    scrape Deployment ERROR_RATE, generates /api/work load, ingests live logs —
-    no HikariCP seed fixtures.
+    Live mode (REMEDIATION_MODE=kubernetes|docker + PROMETHEUS_URL): spikes a
+    real scrape ERROR_RATE (K8s patch-env or Compose /admin/fault), generates
+    /api/work load, ingests live logs — no HikariCP seed fixtures.
 
     Otherwise: rotating demo scenario (local / offline).
     """

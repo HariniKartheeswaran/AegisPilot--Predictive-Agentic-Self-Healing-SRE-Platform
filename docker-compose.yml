@@ -1,0 +1,129 @@
+# AegisPilot — local Docker Compose stack (same images as K8s/ECR).
+#
+# Images:
+#   warroom  → docker/Dockerfile          → aegispilot/warroom  (ECR …/aegispilot/warroom)
+#   scrape   → docker/scrape/Dockerfile   → aegispilot/scrape   (ECR …/aegispilot/scrape)
+#
+# Usage:
+#   cp .env.example .env          # fill Gemini / Slack if you want agents
+#   docker compose up --build
+#   open http://localhost:8080
+#
+# Live Fire (not seed HikariCP): REMEDIATION_MODE=docker + PROMETHEUS_URL set below.
+# Approve → remediates via scrape /admin/fault (clears ERROR_RATE).
+
+name: aegispilot
+
+services:
+  checkout-svc:
+    build:
+      context: ./docker/scrape
+      dockerfile: Dockerfile
+    image: aegispilot/scrape:local
+    environment:
+      SERVICE_NAME: checkout-svc
+      SERVICE_VERSION: v1.0.0
+      ERROR_RATE: "0.0"
+      LATENCY_MS: "20"
+      FAIL_READY: "false"
+      PORT: "8080"
+    ports:
+      - "8081:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+
+  cart-svc:
+    # Same scrape image as checkout (built once above) — shared with K8s/ECR.
+    image: aegispilot/scrape:local
+    pull_policy: never
+    environment:
+      SERVICE_NAME: cart-svc
+      SERVICE_VERSION: v1.0.0
+      ERROR_RATE: "0.0"
+      LATENCY_MS: "20"
+      FAIL_READY: "false"
+      PORT: "8080"
+    ports:
+      - "8082:8080"
+    depends_on:
+      checkout-svc:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+
+  payments-svc:
+    image: aegispilot/scrape:local
+    pull_policy: never
+    environment:
+      SERVICE_NAME: payments-svc
+      SERVICE_VERSION: v1.0.0
+      ERROR_RATE: "0.0"
+      LATENCY_MS: "20"
+      FAIL_READY: "false"
+      PORT: "8080"
+    ports:
+      - "8083:8080"
+    depends_on:
+      checkout-svc:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    volumes:
+      - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9091:9090"
+    depends_on:
+      checkout-svc:
+        condition: service_healthy
+      cart-svc:
+        condition: service_healthy
+      payments-svc:
+        condition: service_healthy
+
+  warroom:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: aegispilot/warroom:local
+    ports:
+      - "8080:8080"
+    environment:
+      BACKEND: ${BACKEND:-local}
+      ORCHESTRATOR: ${ORCHESTRATOR:-local}
+      REMEDIATION_MODE: docker
+      PROMETHEUS_URL: http://prometheus:9090
+      SCRAPE_URL_CHECKOUT: http://checkout-svc:8080
+      SCRAPE_URL_CART: http://cart-svc:8080
+      SCRAPE_URL_PAYMENTS: http://payments-svc:8080
+      # Optional: point at the EC2 Grafana/Loki stack used by K8s
+      GRAFANA_URL: ${GRAFANA_URL:-}
+      GRAFANA_TOKEN: ${GRAFANA_TOKEN:-}
+      GRAFANA_DASHBOARD_PATH: ${GRAFANA_DASHBOARD_PATH:-/d/ad6nckx/aegispilot-dashboard}
+      LOKI_URL: ${LOKI_URL:-}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GOOGLE_GENAI_USE_VERTEXAI: ${GOOGLE_GENAI_USE_VERTEXAI:-false}
+      GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
+      HOST: 0.0.0.0
+      PORT: "8080"
+    depends_on:
+      - prometheus
+      - checkout-svc
+      - cart-svc
+      - payments-svc

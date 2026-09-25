@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     # --- Remediation executor ---
     # simulate = ordered dry-run steps (local/tests)
     # kubernetes = real Deployment patches via the cluster API
+    # docker = real /admin/fault calls against Compose scrape services
     remediation_mode: str = "simulate"
     k8s_namespace: str = "aegispilot"
     k8s_remediate_deployments: str = (
@@ -70,6 +71,11 @@ class Settings(BaseSettings):
         "aegis-warroom-blue,aegis-warroom-green"
     )
     k8s_active_slot: str = ""  # blue | green when remediating war room
+
+    # Compose scrape bases (REMEDIATION_MODE=docker). Defaults: http://<svc>:8080
+    scrape_url_checkout: str = ""
+    scrape_url_cart: str = ""
+    scrape_url_payments: str = ""
 
     # --- Live metrics / Grafana vision ---
     # When set, Fire/alerts without a screenshot get a real Prom-rendered PNG.
@@ -137,6 +143,12 @@ class Settings(BaseSettings):
             os.environ["GRAFANA_TOKEN"] = self.grafana_token
         if self.loki_url:
             os.environ["LOKI_URL"] = self.loki_url
+        if self.scrape_url_checkout:
+            os.environ["SCRAPE_URL_CHECKOUT"] = self.scrape_url_checkout
+        if self.scrape_url_cart:
+            os.environ["SCRAPE_URL_CART"] = self.scrape_url_cart
+        if self.scrape_url_payments:
+            os.environ["SCRAPE_URL_PAYMENTS"] = self.scrape_url_payments
 
     @property
     def has_prometheus(self) -> bool:
