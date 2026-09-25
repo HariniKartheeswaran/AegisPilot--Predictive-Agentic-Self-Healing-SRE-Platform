@@ -60,6 +60,28 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8080
 
+    # --- Remediation executor ---
+    # simulate = ordered dry-run steps (local/tests)
+    # kubernetes = real Deployment patches via the cluster API
+    remediation_mode: str = "simulate"
+    k8s_namespace: str = "aegispilot"
+    k8s_remediate_deployments: str = (
+        "checkout-svc,cart-svc,payments-svc,"
+        "aegis-warroom-blue,aegis-warroom-green"
+    )
+    k8s_active_slot: str = ""  # blue | green when remediating war room
+
+    # --- Live metrics / Grafana vision ---
+    # When set, Fire/alerts without a screenshot get a real Prom-rendered PNG.
+    prometheus_url: str = ""
+    grafana_url: str = ""  # e.g. http://3.111.113.151:3000
+    # Path of the live ops dashboard (Open in Grafana → this, not Explore).
+    grafana_dashboard_path: str = "/d/ad6nckx/aegispilot-dashboard"
+    # Optional Grafana service-account token for /render dashboard screenshots.
+    grafana_token: str = ""
+    # Loki base URL for live log fetch during diagnosis (Alloy ships here).
+    loki_url: str = ""
+
     # --- Storage ---
     aegis_db_path: str = "aegisops.db"
 
@@ -97,6 +119,28 @@ class Settings(BaseSettings):
             if self.google_cloud_project:
                 os.environ["GOOGLE_CLOUD_PROJECT"] = self.google_cloud_project
             os.environ["GOOGLE_CLOUD_LOCATION"] = self.vertex_location
+
+        # Export remediation settings so tools/remediation.py (and any
+        # in-cluster process) reads a single source of truth.
+        os.environ["REMEDIATION_MODE"] = self.remediation_mode
+        os.environ["K8S_NAMESPACE"] = self.k8s_namespace
+        os.environ["K8S_REMEDIATE_DEPLOYMENTS"] = self.k8s_remediate_deployments
+        if self.k8s_active_slot:
+            os.environ["K8S_ACTIVE_SLOT"] = self.k8s_active_slot
+        if self.prometheus_url:
+            os.environ["PROMETHEUS_URL"] = self.prometheus_url
+        if self.grafana_url:
+            os.environ["GRAFANA_URL"] = self.grafana_url
+        if self.grafana_dashboard_path:
+            os.environ["GRAFANA_DASHBOARD_PATH"] = self.grafana_dashboard_path
+        if self.grafana_token:
+            os.environ["GRAFANA_TOKEN"] = self.grafana_token
+        if self.loki_url:
+            os.environ["LOKI_URL"] = self.loki_url
+
+    @property
+    def has_prometheus(self) -> bool:
+        return bool(self.prometheus_url.strip())
 
 
 @lru_cache

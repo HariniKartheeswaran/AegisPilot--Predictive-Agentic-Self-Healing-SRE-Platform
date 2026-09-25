@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
@@ -75,11 +75,23 @@ class AdkOrchestrator:
 
     # -------------------------------------------------------------- pipeline
     async def handle_alert(self, alert: Alert) -> Incident:
-        # Keep the demo scenario temporally fresh (bad deploy ~12 min ago) so
-        # Correlation confidence reflects a just-shipped regression, not a stale
-        # fixture. No-op cost is a handful of writes.
-        from backend.seed.seed_data import refresh_demo_timeline
-        refresh_demo_timeline(self.deps.storage)
+        # Seed timeline is for offline demo only. Live K8s mode must not rewrite
+        # HikariCP / OOM fixtures over real scrape state.
+        from backend.services.live_snapshot import ensure_alert_snapshot
+
+        try:
+            from backend.services.live_fire import live_mode_enabled
+
+            if not live_mode_enabled():
+                from backend.seed.seed_data import refresh_demo_timeline
+
+                refresh_demo_timeline(self.deps.storage)
+        except Exception:
+            from backend.seed.seed_data import refresh_demo_timeline
+
+            refresh_demo_timeline(self.deps.storage)
+
+        ensure_alert_snapshot(alert)
 
         incident = Incident(status=IncidentStatus.DETECTED, service=alert.service, alert=alert)
         self.deps.storage.save_incident(incident)
@@ -200,10 +212,14 @@ class AdkOrchestrator:
         self.deps.storage.save_incident(rc.incident)
         # Only surface a vision panel when a real image was read.
         if has_image:
-            await rc.emit("vision_result", agent="Diagnosis",
-                          image_url=f"/api/incidents/{rc.incident.id}/grafana",
-                          confirmed=vision["confirmed"], observation=vision["observation"],
-                          annotation=vision["annotation"])
+            explore = (alert.metadata or {}).get("grafana_explore_url") or ""
+            await rc.emit(
+                "vision_result", agent="Diagnosis",
+                image_url=f"/api/incidents/{rc.incident.id}/grafana",
+                confirmed=vision["confirmed"], observation=vision["observation"],
+                annotation=vision["annotation"],
+                explore_url=explore,
+            )
         await rc.emit("agent_end", agent="Diagnosis")
 
     async def _correlation(self, rc: RunContext, agent, capture: dict) -> None:
