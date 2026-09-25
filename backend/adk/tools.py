@@ -11,7 +11,6 @@ approval gate resolves, so the model can never trigger a rollback on its own.
 """
 from __future__ import annotations
 
-from typing import Any
 
 from google.adk.tools import FunctionTool
 

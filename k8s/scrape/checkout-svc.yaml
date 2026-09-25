@@ -1,0 +1,87 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: checkout-svc
+  namespace: aegispilot
+  labels:
+    app: checkout-svc
+    team: aegis
+    tier: scrape
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: checkout-svc
+  template:
+    metadata:
+      labels:
+        app: checkout-svc
+        team: aegis
+        tier: scrape
+        version: v1.0.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: checkout-svc
+          image: 850887971586.dkr.ecr.ap-south-1.amazonaws.com/aegispilot/scrape:v0.1.0
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: SERVICE_NAME
+              value: checkout-svc
+            - name: SERVICE_VERSION
+              value: v1.0.0
+            - name: ERROR_RATE
+              value: "0.0"
+            - name: LATENCY_MS
+              value: "25"
+            - name: FAIL_READY
+              value: "false"
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+      imagePullSecrets:
+        - name: ecr-pull
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: checkout-svc
+  namespace: aegispilot
+  labels:
+    app: checkout-svc
+    team: aegis
+    tier: scrape
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  selector:
+    app: checkout-svc
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080

@@ -8,8 +8,8 @@ constructor lines marked below.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
+from typing import Optional
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -78,8 +78,10 @@ async def lifespan(app: FastAPI):
         log.info("seeded fixtures")
     else:
         log.info("fixtures already present; skipping seed")
-    if not (GRAFANA_IMG.exists() and CART_OUT.exists() and PAYMENTS_OUT.exists()):
-        generate_grafana_all()  # deterministic; renders all three scenario snapshots
+    # Skip demo seed PNGs when live Prometheus is configured (K8s / real metrics).
+    if not (settings.prometheus_url or "").strip():
+        if not (GRAFANA_IMG.exists() and CART_OUT.exists() and PAYMENTS_OUT.exists()):
+            generate_grafana_all()  # local/demo only
 
     gate = ApprovalGate()
     deps = Deps(storage=storage, gemini=gemini, hub=hub, gate=gate)
@@ -130,11 +132,65 @@ async def post_alert(alert: Alert, request: Request):
 
 @app.post("/api/demo/fire")
 async def demo_fire(request: Request):
-    """Fire the NEXT rotating demo scenario (checkout → cart → payments)."""
+    """Fire an incident.
+
+    Live mode (REMEDIATION_MODE=kubernetes|docker + PROMETHEUS_URL): spikes a
+    real scrape ERROR_RATE (K8s patch-env or Compose /admin/fault), generates
+    /api/work load, ingests live logs — no HikariCP seed fixtures.
+
+    Otherwise: rotating demo scenario (local / offline).
+    """
+    from backend.services.live_fire import live_mode_enabled, prepare_live_fire
+
+    storage = request.app.state.storage
+    if live_mode_enabled():
+        import asyncio
+
+        prepared = await asyncio.to_thread(prepare_live_fire, storage, "checkout-svc", 0.42)
+        alert = prepared["alert"]
+        await request.app.state.bus.publish(alert)
+        return {
+            "accepted": True,
+            "scenario": "live",
+            "service": alert.service,
+            "alert": alert.alert,
+            "error_rate": alert.error_rate,
+            "live": True,
+            "load": prepared.get("load"),
+        }
+
     sc = next_scenario()
     alert = Alert(**sc.alert)
     await request.app.state.bus.publish(alert)
     return {"accepted": True, "scenario": sc.key, "service": alert.service, "alert": alert.alert}
+
+
+@app.post("/api/deploys")
+async def record_deploy(
+    request: Request,
+    service: str = Form(...),
+    version: str = Form(...),
+    commit_sha: str = Form(""),
+    deployed_by: str = Form("jenkins-ci"),
+    rollback_target: str = Form(""),
+):
+    """Record a deploy for Correlation only — does NOT open an incident.
+
+    Jenkins must call this (not /api/incidents/custom) after a promote.
+    """
+    storage = request.app.state.storage
+    t = now_ms()
+    dep = Deploy(
+        id=f"dep_{service}_{t}",
+        service=service,
+        version=version,
+        deployed_at=t,
+        deployed_by=deployed_by,
+        commit_sha=(commit_sha or "unknown")[:12],
+        rollback_target=(rollback_target.strip() or None),
+    )
+    storage.add_deploy(dep)
+    return {"accepted": True, "deploy_id": dep.id, "service": service, "version": version}
 
 
 @app.post("/api/incidents/custom")
@@ -229,8 +285,11 @@ async def health(request: Request):
         "project": s.google_cloud_project or None,
         "vertex_location": s.vertex_location if s.use_vertex else None,
         "compute_location": s.google_cloud_location,
-        "backend": s.backend,
+            "backend": s.backend,
         "slack_configured": s.has_slack,
+        # getattr: unit tests may stub Settings with SimpleNamespace
+        "prometheus_configured": bool(getattr(s, "has_prometheus", False)),
+        "grafana_url": (getattr(s, "grafana_url", None) or None),
     }
 
 
@@ -269,20 +328,49 @@ async def rca(incident_id: str, request: Request):
 async def grafana(incident_id: str, request: Request):
     """Serve the exact Grafana image THIS incident's vision agent analyzed.
 
-    Each scenario carries its own snapshot; a custom incident may carry none
-    (then 404, and the UI shows a clean 'no snapshot' state) — we never serve a
-    misleading fallback from a different service.
+    Prefers the on-disk path; falls back to base64 stored on the alert metadata
+    so a pod recycle does not blank the Diagnosis panel.
     """
+    from fastapi.responses import Response
+
     inc = request.app.state.storage.get_incident(incident_id)
-    if not (inc and inc.alert and inc.alert.grafana_snapshot):
+    if not (inc and inc.alert and (inc.alert.grafana_snapshot or (inc.alert.metadata or {}).get("grafana_snapshot_b64"))):
         raise HTTPException(404, "no snapshot for this incident")
-    p = Path(inc.alert.grafana_snapshot)
-    if not p.is_absolute():
-        p = SEED_DIR.parent.parent / p
-    if not p.exists():
-        raise HTTPException(404, "snapshot not available")
-    media = "image/jpeg" if p.suffix.lower() in (".jpg", ".jpeg") else "image/png"
-    return FileResponse(p, media_type=media)
+
+    meta = inc.alert.metadata or {}
+    snap = inc.alert.grafana_snapshot
+    b64 = meta.get("grafana_snapshot_b64")
+    # Prefer live base64 over on-disk seed PNGs (demo images ship in the image).
+    seed_path = bool(snap) and ("backend/seed" in str(snap).replace("\\", "/"))
+    if b64 and (meta.get("snapshot_source") in ("prometheus", "grafana-render") or seed_path or not snap):
+        import base64
+
+        media = "image/png"
+        if snap and str(snap).lower().endswith((".jpg", ".jpeg")):
+            media = "image/jpeg"
+        return Response(content=base64.b64decode(b64), media_type=media)
+
+    if snap:
+        p = Path(snap)
+        if not p.is_absolute():
+            p = SEED_DIR.parent.parent / p
+        if p.exists() and not seed_path:
+            media = "image/jpeg" if p.suffix.lower() in (".jpg", ".jpeg") else "image/png"
+            return FileResponse(p, media_type=media)
+        if p.exists() and seed_path and not b64:
+            # Last resort only when no live snapshot was captured.
+            media = "image/jpeg" if p.suffix.lower() in (".jpg", ".jpeg") else "image/png"
+            return FileResponse(p, media_type=media)
+
+    if b64:
+        import base64
+
+        media = "image/png"
+        if snap and str(snap).lower().endswith((".jpg", ".jpeg")):
+            media = "image/jpeg"
+        return Response(content=base64.b64decode(b64), media_type=media)
+
+    raise HTTPException(404, "snapshot not available")
 
 
 # --------------------------------------------------------------------------- #

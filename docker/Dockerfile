@@ -1,13 +1,18 @@
 # syntax=docker/dockerfile:1
 # ============================================================================
-# AegisPilot — single-container image for Cloud Run.
+# AegisPilot — War Room image (API + UI).
 # Build context is the repo root:  docker build -f docker/Dockerfile .
+#
+# Same image for:
+#   - Docker Compose (docker-compose.yml → aegispilot/warroom)
+#   - ECR → K8s (850887971586.dkr.ecr.ap-south-1.amazonaws.com/aegispilot/warroom)
+#   - Cloud Run (optional)
 #
 #   Stage 1 (node:20)          builds the React war room  → frontend/dist
 #   Stage 2 (python:3.11-slim) runs FastAPI + serves that dist from "/"
 #
 # One service hosts both the API and the UI. Secrets are NEVER baked in — they
-# are injected as env vars at deploy time (see deploy.sh).
+# are injected as env vars at deploy / compose time.
 # ============================================================================
 
 # --------------------------------------------------------------------------- #
