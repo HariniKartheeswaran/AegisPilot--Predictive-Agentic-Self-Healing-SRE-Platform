@@ -11,8 +11,11 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 
+import httpx
+
 from backend.models import LogLine
 from backend.services.storage import StorageService
+from backend.config import get_settings
 
 # Ordered rules: first match wins. Each is a real operational signature.
 _CLASS_RULES: list[tuple[str, re.Pattern]] = [
@@ -42,6 +45,53 @@ def classify_log_line(message: str, level: str) -> str:
         return "warning_other"
     return "info"
 
+
+def fetch_loki_logs(service: str, limit: int = 50) -> list[LogLine]:
+    """Fetch recent logs for a service from Loki."""
+    settings = get_settings()
+
+    query = f'{{namespace="aegispilot", app="{service}"}}'
+
+    response = httpx.get(
+        f"{settings.loki_url}/loki/api/v1/query_range",
+        params={
+            "query": query,
+            "limit": limit,
+            "direction": "backward",
+        },
+        timeout=10.0,
+    )
+
+    response.raise_for_status()
+
+    payload = response.json()
+
+    logs: list[LogLine] = []
+
+    for stream in payload.get("data", {}).get("result", []):
+        labels = stream.get("stream", {})
+
+        for timestamp, message in stream.get("values", []):
+            if re.search(r"\bERROR\b", message, re.I):
+                level = "ERROR"
+            elif re.search(r"\bWARN(?:ING)?\b", message, re.I):
+                level = "WARN"
+            elif re.search(r"\bINFO\b", message, re.I):
+                level = "INFO"
+            else:
+                level = labels.get("detected_level", "INFO").upper()
+
+            logs.append(
+                LogLine(
+                    id=f"loki-{timestamp}",
+                    service=labels.get("app", service),
+                    ts=int(timestamp) // 1_000_000,
+                    level=level,
+                    message=message.strip(),
+                )
+            )
+
+    return logs
 
 def fetch_logs(storage: StorageService, service: str, limit: int = 200) -> list[LogLine]:
     return storage.logs_for_service(service, limit=limit)

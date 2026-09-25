@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8080
 
+    # --- Loki ---
+    loki_url: str = "http://3.111.113.151:3100"
+
     # --- Storage ---
     aegis_db_path: str = "aegisops.db"
 

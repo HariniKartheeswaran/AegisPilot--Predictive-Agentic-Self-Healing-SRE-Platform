@@ -42,6 +42,25 @@ class DiagnosisAgent(BaseAgent):
         await ctx.tool(self.name, "log_fetcher", f"fetch_logs({service})",
                        {"lines": len(raw_logs)})
 
+        # Fetch recent logs from Loki and add them to the diagnosis stream.
+        try:
+            loki_logs = D.fetch_loki_logs(service)
+            raw_logs.extend(loki_logs)
+            await ctx.tool(
+                self.name,
+                "log_fetcher",
+                f"fetch_loki_logs({service})",
+                {"lines": len(loki_logs)},
+            )
+        except Exception as exc:
+            # Loki is supplementary; existing storage logs remain usable.
+            await ctx.tool(
+                self.name,
+                "log_fetcher",
+                "Loki unavailable",
+                {"error": str(exc)},
+            )
+
         logs, analysis = D.analyze_logs(raw_logs)
         await ctx.tool(
             self.name, "log_classifier", "classify + aggregate log stream",
