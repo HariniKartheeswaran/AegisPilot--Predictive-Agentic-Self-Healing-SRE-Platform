@@ -17,8 +17,8 @@ import os
 import re
 import time
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import datetime
+from typing import Any
 
 import httpx
 
