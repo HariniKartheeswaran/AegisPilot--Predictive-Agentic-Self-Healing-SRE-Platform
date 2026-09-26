@@ -1,12 +1,21 @@
 [run]
-source = backend
+# Paths must be repo-relative (backend/...) so Sonar maps Cobertura correctly.
+relative_files = True
+source = .
 omit =
     backend/seed/*
     */__pycache__/*
     .venv/*
+    */.venv/*
 
 [report]
+include =
+    backend/*
 omit =
     backend/seed/*
 show_missing = true
 skip_covered = false
+
+[xml]
+# Keep package paths under backend/ for Sonar Python Cobertura sensor
+package_depth = 99
