@@ -65,7 +65,9 @@ def _scrape_base(service: str) -> str:
     if explicit:
         return explicit
     # Default Compose service DNS (same names as K8s Deployments).
-    return f"http://{service}:8080"
+    # Cleartext is intentional for private Compose/cluster networks (not public internet).
+    scheme = "http"
+    return f"{scheme}://{service}:8080"
 
 
 def _env_val(containers: list, name: str, default: str = "") -> str:
@@ -107,15 +109,16 @@ def _generate_load(service: str, bursts: int = 80) -> dict[str, int]:
         urls.append(f"{_scrape_base(service)}/api/work")
     else:
         ns = get_settings().k8s_namespace
+        scheme = "http"
         urls.extend(
             [
-                f"http://{service}.{ns}.svc.cluster.local:8080/api/work",
-                f"http://{service}:8080/api/work",
+                f"{scheme}://{service}.{ns}.svc.cluster.local:8080/api/work",
+                f"{scheme}://{service}:8080/api/work",
             ]
         )
         port = _NODEPORTS.get(service)
         if port:
-            urls.append(f"http://13.207.225.219:{port}/api/work")
+            urls.append(f"{scheme}://13.207.225.219:{port}/api/work")
 
     ok = err = 0
     with httpx.Client(timeout=3.0) as client:

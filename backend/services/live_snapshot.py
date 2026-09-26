@@ -7,14 +7,15 @@ Also attaches an Open-in-Grafana deep-link to the live dashboard.
 Optional: set GRAFANA_TOKEN to prefer a real Grafana /render screenshot when the
 image-renderer plugin is installed; otherwise the Prom 4-panel PNG is used.
 
-Snapshots live under ``/tmp/aegis_snapshots`` plus base64 on alert.metadata so
-the UI survives pod recycle.
+Snapshots live under a process-owned temp dir (or ``AEGIS_SNAPSHOT_DIR``)
+plus base64 on alert.metadata so the UI survives pod recycle.
 """
 from __future__ import annotations
 
 import base64
 import logging
 import os
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,7 +44,20 @@ ORANGE = "#f0883e"  # 5xx
 RED = "#f85149"
 AMBER = "#d29922"
 
-SNAP_DIR = Path("/tmp/aegis_snapshots")
+
+def _snapshot_dir() -> Path:
+    """App-owned snapshot dir (not a world-writable path literal)."""
+    raw = (os.environ.get("AEGIS_SNAPSHOT_DIR") or "").strip()
+    base = Path(raw) if raw else Path(tempfile.gettempdir()) / "aegis_snapshots"
+    base.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(base, 0o700)
+    except OSError:
+        pass
+    return base
+
+
+SNAP_DIR = _snapshot_dir()
 _SCRAPE_SERVICES = {"checkout-svc", "cart-svc", "payments-svc"}
 # PromQL for cluster-wide up series (duplicated literal → single constant for Sonar).
 _UP_AEGIS_JOB = 'up{job=~"aegis-.*"}'

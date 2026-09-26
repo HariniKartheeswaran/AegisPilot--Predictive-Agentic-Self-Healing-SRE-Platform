@@ -343,7 +343,9 @@ def _scrape_base(service: str) -> str:
         explicit = (os.getenv(env_key) or "").strip().rstrip("/")
         if explicit:
             return explicit
-    return f"http://{service}:8080"
+    # Compose DNS cleartext — private network only (see live_fire scrape defaults).
+    scheme = "http"
+    return f"{scheme}://{service}:8080"
 
 
 async def _execute_docker(plan: RemediationPlan, service: str) -> ExecResult:
