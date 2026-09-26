@@ -54,6 +54,26 @@ def _media_for_snapshot(path_or_name: object | None) -> str:
     return _MEDIA_PNG
 
 
+def _is_seed_snapshot(snap: object | None) -> bool:
+    return bool(snap) and ("backend/seed" in str(snap).replace("\\", "/"))
+
+
+def _grafana_b64_response(b64: str, snap: object | None):
+    import base64
+    from fastapi.responses import Response
+
+    return Response(content=base64.b64decode(b64), media_type=_media_for_snapshot(snap))
+
+
+def _grafana_file_response(snap: object, seed_path: bool, b64: object | None):
+    p = Path(snap)
+    if not p.is_absolute():
+        p = SEED_DIR.parent.parent / p
+    if p.exists() and (not seed_path or not b64):
+        return FileResponse(p, media_type=_media_for_snapshot(p))
+    return None
+
+
 def _build_storage(settings):
     if settings.backend.lower() != "cloud":
         return SQLiteStorage(settings.db_path)
@@ -348,9 +368,6 @@ async def grafana(incident_id: str, request: Request):
     Prefers the on-disk path; falls back to base64 stored on the alert metadata
     so a pod recycle does not blank the Diagnosis panel.
     """
-    from fastapi.responses import Response
-    import base64
-
     inc = request.app.state.storage.get_incident(incident_id)
     alert = getattr(inc, "alert", None) if inc else None
     meta = (getattr(alert, "metadata", None) or {}) if alert else {}
@@ -359,22 +376,18 @@ async def grafana(incident_id: str, request: Request):
     if not (alert and (snap or b64)):
         raise HTTPException(404, "no snapshot for this incident")
 
-    seed_path = bool(snap) and ("backend/seed" in str(snap).replace("\\", "/"))
+    seed_path = _is_seed_snapshot(snap)
     live_src = meta.get("snapshot_source") in ("prometheus", "grafana-render")
-    prefer_b64 = bool(b64) and (live_src or seed_path or not snap)
-
-    if prefer_b64:
-        return Response(content=base64.b64decode(b64), media_type=_media_for_snapshot(snap))
+    if bool(b64) and (live_src or seed_path or not snap):
+        return _grafana_b64_response(b64, snap)
 
     if snap:
-        p = Path(snap)
-        if not p.is_absolute():
-            p = SEED_DIR.parent.parent / p
-        if p.exists() and (not seed_path or not b64):
-            return FileResponse(p, media_type=_media_for_snapshot(p))
+        file_resp = _grafana_file_response(snap, seed_path, b64)
+        if file_resp is not None:
+            return file_resp
 
     if b64:
-        return Response(content=base64.b64decode(b64), media_type=_media_for_snapshot(snap))
+        return _grafana_b64_response(b64, snap)
 
     raise HTTPException(404, "snapshot not available")
 

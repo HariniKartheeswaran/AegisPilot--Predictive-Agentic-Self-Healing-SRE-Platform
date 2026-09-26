@@ -43,6 +43,8 @@ _DEFAULT_ALLOWLIST = (
     "aegis-warroom-blue,aegis-warroom-green"
 )
 _STEP_VERIFY_ROLLOUT = "Verify rollout"
+_STEP_SELECT_ROLLBACK = "Select rollback target"
+_STEP_VERIFY_HEALTH = "Verify health"
 
 
 def _mode() -> str:
@@ -251,7 +253,7 @@ async def _execute_kubernetes(plan: RemediationPlan, service: str) -> ExecResult
     try:
         if plan.action == "rollback":
             target_ver = plan.rollback_target or "v1.0.0"
-            add("Select rollback target", True, f"known-good {target_ver}")
+            add(_STEP_SELECT_ROLLBACK, True, f"known-good {target_ver}")
             detail = await asyncio.to_thread(
                 _patch_container_env, apps, ns, deploy,
                 {
@@ -318,14 +320,14 @@ async def _execute_simulate(plan: RemediationPlan, service: str) -> ExecResult:
 
     if plan.action == "rollback":
         await do("Freeze deploys", f"Locked deploy pipeline for {service}")
-        await do("Select rollback target", f"Known-good {plan.rollback_target}")
+        await do(_STEP_SELECT_ROLLBACK, f"Known-good {plan.rollback_target}")
         await do("Drain traffic from bad pods", "Cordoned pods running v2.4.1")
         await do("Deploy known-good version", f"Rolling out {plan.rollback_target}")
-        await do("Verify health", "5xx back under SLO; p99 recovering")
+        await do(_STEP_VERIFY_HEALTH, "5xx back under SLO; p99 recovering")
         await do("Unfreeze deploys", "Pipeline unlocked")
     else:
         await do(f"Execute {plan.action}", plan.target)
-        await do("Verify health", "Signals recovering within SLO")
+        await do(_STEP_VERIFY_HEALTH, "Signals recovering within SLO")
 
     return ExecResult(
         ok=all(s.ok for s in steps), action=plan.action,
@@ -373,7 +375,7 @@ async def _execute_docker(plan: RemediationPlan, service: str) -> ExecResult:
         async with httpx.AsyncClient(timeout=10.0) as client:
             if plan.action == "rollback":
                 ver = plan.rollback_target or "v1.0.0"
-                add("Select rollback target", True, f"Known-good {ver}")
+                add(_STEP_SELECT_ROLLBACK, True, f"Known-good {ver}")
                 r = await client.post(
                     f"{base}/admin/fault",
                     json={
@@ -404,7 +406,7 @@ async def _execute_docker(plan: RemediationPlan, service: str) -> ExecResult:
 
             health = await client.get(f"{base}/health")
             health.raise_for_status()
-            add("Verify health", True, f"GET {base}/health → {health.status_code}")
+            add(_STEP_VERIFY_HEALTH, True, f"GET {base}/health → {health.status_code}")
     except Exception as exc:
         add("Docker scrape API error", False, str(exc))
         return ExecResult(ok=False, action=plan.action, target=target,
