@@ -77,7 +77,7 @@ class ApprovalGate:
 _PII_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("[REDACTED_EMAIL]", re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")),
     ("[REDACTED_IP]", re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")),
-    ("[REDACTED_CARD]", re.compile(r"\b(?:\d[ -]*?){13,16}\b")),
+    ("[REDACTED_CARD]", re.compile(r"\b\d(?:[ -]?\d){12,15}\b")),
     ("[REDACTED_TOKEN]", re.compile(r"\b(?:sk|pk|ghp|xox[baprs])[-_][A-Za-z0-9]{8,}\b")),
     ("[REDACTED_JWT]", re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,}\b")),
     ("[REDACTED_PHONE]", re.compile(r"\b\+?\d{1,3}[\s.-]?\(?\d{2,4}\)?[\s.-]?\d{3,4}[\s.-]?\d{3,4}\b")),

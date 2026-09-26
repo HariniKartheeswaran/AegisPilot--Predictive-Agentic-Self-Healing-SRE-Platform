@@ -104,3 +104,58 @@ def test_warroom_deployment_follows_active_slot(monkeypatch):
     monkeypatch.setattr(rem, "_active_warroom_slot", lambda: "green")
     assert _deployment_for("aegis-warroom") == "aegis-warroom-green"
     assert _deployment_for("checkout-svc") == "checkout-svc"
+
+
+def test_docker_mode_rollback_clears_fault(monkeypatch):
+    """Docker remediation POSTs /admin/fault and verifies health."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    monkeypatch.setenv("REMEDIATION_MODE", "docker")
+    monkeypatch.setenv("SCRAPE_URL_CHECKOUT", "http://checkout:8080")
+
+    fault_resp = MagicMock(status_code=200)
+    fault_resp.raise_for_status = MagicMock()
+    health_resp = MagicMock(status_code=200)
+    health_resp.raise_for_status = MagicMock()
+
+    client = AsyncMock()
+    client.post = AsyncMock(return_value=fault_resp)
+    client.get = AsyncMock(return_value=health_resp)
+    client.__aenter__.return_value = client
+    client.__aexit__.return_value = None
+
+    async def _run():
+        plan = build_plan(
+            action="rollback",
+            service="checkout-svc",
+            rollback_target="v1.0.0",
+            rationale="heal docker scrape",
+        )
+        with patch("httpx.AsyncClient", return_value=client):
+            result = await execute_remediation(plan, "checkout-svc")
+        assert result.ok is True
+        assert result.simulated is False
+        assert client.post.await_count >= 1
+        body = client.post.await_args.kwargs["json"]
+        assert body["error_rate"] == 0.0
+        assert body["service_version"] == "v1.0.0"
+
+    asyncio.run(_run())
+
+
+def test_docker_mode_rejects_non_scrape_target(monkeypatch):
+    monkeypatch.setenv("REMEDIATION_MODE", "docker")
+    monkeypatch.setenv("K8S_REMEDIATE_DEPLOYMENTS", "checkout-svc")
+
+    async def _run():
+        plan = build_plan(
+            action="restart",
+            service="random-svc",
+            rollback_target=None,
+            rationale="should fail",
+        )
+        result = await execute_remediation(plan, "random-svc")
+        assert result.ok is False
+        assert result.simulated is False
+
+    asyncio.run(_run())

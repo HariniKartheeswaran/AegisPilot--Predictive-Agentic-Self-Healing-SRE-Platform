@@ -55,19 +55,14 @@ def classify_severity(error_rate_pct: float, tier: int) -> str:
     Tier-0 (checkout/payments) at 40% errors is a company-down SEV1. The same
     rate on a tier-2 leaf is a SEV3. This is the real rubric, not a guess.
     """
-    if tier == 0:
-        if error_rate_pct >= 25: return "SEV1"
-        if error_rate_pct >= 8:  return "SEV2"
-        if error_rate_pct >= 2:  return "SEV3"
-        return "SEV4"
-    if tier == 1:
-        if error_rate_pct >= 40: return "SEV1"
-        if error_rate_pct >= 15: return "SEV2"
-        if error_rate_pct >= 4:  return "SEV3"
-        return "SEV4"
-    # tier 2+
-    if error_rate_pct >= 60: return "SEV2"
-    if error_rate_pct >= 20: return "SEV3"
+    # Table-driven bands keep cognitive complexity under Sonar's limit of 15.
+    bands = {
+        0: ((25.0, "SEV1"), (8.0, "SEV2"), (2.0, "SEV3")),
+        1: ((40.0, "SEV1"), (15.0, "SEV2"), (4.0, "SEV3")),
+    }.get(tier, ((60.0, "SEV2"), (20.0, "SEV3")))
+    for minimum, severity in bands:
+        if error_rate_pct >= minimum:
+            return severity
     return "SEV4"
 
 

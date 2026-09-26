@@ -215,8 +215,13 @@ async def custom_incident(
     # Ingest the judge's log lines (newest last), spaced over the last ~12 min.
     lines = [ln.strip() for ln in logs.splitlines() if ln.strip()]
     for i, msg in enumerate(reversed(lines)):
-        lvl = "ERROR" if any(k in msg.lower() for k in ("error", "fail", "timeout", "exception", "5xx", "oom")) \
-            else "WARN" if any(k in msg.lower() for k in ("warn", "degraded", "slow", "retry")) else "INFO"
+        lower = msg.lower()
+        if any(k in lower for k in ("error", "fail", "timeout", "exception", "5xx", "oom")):
+            lvl = "ERROR"
+        elif any(k in lower for k in ("warn", "degraded", "slow", "retry")):
+            lvl = "WARN"
+        else:
+            lvl = "INFO"
         storage.add_log(LogLine(
             id=f"log_custom_{service}_{now}_{i}", service=service,
             ts=now - i * 45_000, level=lvl, message=msg,
@@ -275,17 +280,23 @@ async def pubsub_push(request: Request):
 @app.get("/api/health")
 async def health(request: Request):
     s = request.app.state.settings
+    if s.use_vertex:
+        auth = "vertex-adc"
+    elif s.has_gemini_key:
+        auth = "ai-studio-key"
+    else:
+        auth = "none"
     return {
         "status": "ok",
         "orchestrator": type(request.app.state.orchestrator).__name__,
         "model": s.gemini_model,
         "model_pro": s.gemini_model_pro,
-        "auth": "vertex-adc" if s.use_vertex else ("ai-studio-key" if s.has_gemini_key else "none"),
+        "auth": auth,
         "vertex": s.use_vertex,
         "project": s.google_cloud_project or None,
         "vertex_location": s.vertex_location if s.use_vertex else None,
         "compute_location": s.google_cloud_location,
-            "backend": s.backend,
+        "backend": s.backend,
         "slack_configured": s.has_slack,
         # getattr: unit tests may stub Settings with SimpleNamespace
         "prometheus_configured": bool(getattr(s, "has_prometheus", False)),
@@ -334,11 +345,12 @@ async def grafana(incident_id: str, request: Request):
     from fastapi.responses import Response
 
     inc = request.app.state.storage.get_incident(incident_id)
-    if not (inc and inc.alert and (inc.alert.grafana_snapshot or (inc.alert.metadata or {}).get("grafana_snapshot_b64"))):
+    alert = getattr(inc, "alert", None) if inc else None
+    meta = (getattr(alert, "metadata", None) or {}) if alert else {}
+    snap = getattr(alert, "grafana_snapshot", None) if alert else None
+    if not (alert and (snap or meta.get("grafana_snapshot_b64"))):
         raise HTTPException(404, "no snapshot for this incident")
 
-    meta = inc.alert.metadata or {}
-    snap = inc.alert.grafana_snapshot
     b64 = meta.get("grafana_snapshot_b64")
     # Prefer live base64 over on-disk seed PNGs (demo images ship in the image).
     seed_path = bool(snap) and ("backend/seed" in str(snap).replace("\\", "/"))
