@@ -313,43 +313,47 @@ def capture_live_snapshot(service: str) -> Optional[dict[str, Any]]:
         return None
 
 
+def _is_seed_path(path: Any) -> bool:
+    return bool(path) and "backend/seed" in str(path).replace("\\", "/")
+
+
+def _attach_explore_only(alert, grafana_url: str) -> Any:
+    if grafana_url and "grafana_explore_url" not in (alert.metadata or {}):
+        alert.metadata = dict(alert.metadata or {})
+        alert.metadata["grafana_explore_url"] = explore_url(
+            alert.service, grafana_base=grafana_url
+        )
+    return alert
+
+
+def _apply_captured(alert, captured: dict[str, Any], seed: Any) -> Any:
+    alert.grafana_snapshot = captured["grafana_snapshot"]
+    meta = dict(alert.metadata or {})
+    if captured.get("grafana_explore_url"):
+        meta["grafana_explore_url"] = captured["grafana_explore_url"]
+    if captured.get("grafana_snapshot_b64"):
+        meta["grafana_snapshot_b64"] = captured["grafana_snapshot_b64"]
+    meta["snapshot_source"] = captured.get("source", "prometheus")
+    if _is_seed_path(seed):
+        meta["seed_snapshot_replaced"] = str(seed)
+    alert.metadata = meta
+    return alert
+
+
 def ensure_alert_snapshot(alert) -> Any:
     """Attach a live Prom/Grafana PNG when Prometheus is configured."""
     s = get_settings()
     seed = getattr(alert, "grafana_snapshot", None)
-
-    def _attach_explore_only() -> Any:
-        if s.grafana_url and "grafana_explore_url" not in (alert.metadata or {}):
-            alert.metadata = dict(alert.metadata or {})
-            alert.metadata["grafana_explore_url"] = explore_url(
-                alert.service, grafana_base=s.grafana_url
-            )
-        return alert
-
-    def _is_seed_path(path: Any) -> bool:
-        return bool(path) and "backend/seed" in str(path).replace("\\", "/")
-
-    def _apply_captured(captured: dict[str, Any]) -> Any:
-        alert.grafana_snapshot = captured["grafana_snapshot"]
-        meta = dict(alert.metadata or {})
-        if captured.get("grafana_explore_url"):
-            meta["grafana_explore_url"] = captured["grafana_explore_url"]
-        if captured.get("grafana_snapshot_b64"):
-            meta["grafana_snapshot_b64"] = captured["grafana_snapshot_b64"]
-        meta["snapshot_source"] = captured.get("source", "prometheus")
-        if _is_seed_path(seed):
-            meta["seed_snapshot_replaced"] = str(seed)
-        alert.metadata = meta
-        return alert
+    grafana = (s.grafana_url or "").strip()
 
     if (s.prometheus_url or "").strip():
         captured = capture_live_snapshot(alert.service)
         if captured:
-            return _apply_captured(captured)
+            return _apply_captured(alert, captured, seed)
         if _is_seed_path(seed):
             alert.grafana_snapshot = None
-        return _attach_explore_only()
+        return _attach_explore_only(alert, grafana)
 
-    if _is_seed_path(seed) and (s.grafana_url or "").strip():
-        return _attach_explore_only()
-    return _attach_explore_only() if seed else alert
+    if seed:
+        return _attach_explore_only(alert, grafana)
+    return alert
