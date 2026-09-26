@@ -7,14 +7,15 @@ Also attaches an Open-in-Grafana deep-link to the live dashboard.
 Optional: set GRAFANA_TOKEN to prefer a real Grafana /render screenshot when the
 image-renderer plugin is installed; otherwise the Prom 4-panel PNG is used.
 
-Snapshots live under ``/tmp/aegis_snapshots`` plus base64 on alert.metadata so
-the UI survives pod recycle.
+Snapshots live under a process-owned temp dir (or ``AEGIS_SNAPSHOT_DIR``)
+plus base64 on alert.metadata so the UI survives pod recycle.
 """
 from __future__ import annotations
 
 import base64
 import logging
 import os
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,7 +44,32 @@ ORANGE = "#f0883e"  # 5xx
 RED = "#f85149"
 AMBER = "#d29922"
 
-SNAP_DIR = Path("/tmp/aegis_snapshots")
+_DEFAULT_DASHBOARD_PATH = "/d/ad6nckx/aegispilot-dashboard"
+
+
+def _dashboard_path() -> str:
+    s = get_settings()
+    dash = (
+        getattr(s, "grafana_dashboard_path", None)
+        or os.environ.get("GRAFANA_DASHBOARD_PATH")
+        or _DEFAULT_DASHBOARD_PATH
+    ).strip() or _DEFAULT_DASHBOARD_PATH
+    return dash if dash.startswith("/") else f"/{dash}"
+
+
+def _snapshot_dir() -> Path:
+    """App-owned snapshot dir (not a world-writable path literal)."""
+    raw = (os.environ.get("AEGIS_SNAPSHOT_DIR") or "").strip()
+    base = Path(raw) if raw else Path(tempfile.gettempdir()) / "aegis_snapshots"
+    base.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(base, 0o700)
+    except OSError:
+        pass
+    return base
+
+
+SNAP_DIR = _snapshot_dir()
 _SCRAPE_SERVICES = {"checkout-svc", "cart-svc", "payments-svc"}
 # PromQL for cluster-wide up series (duplicated literal → single constant for Sonar).
 _UP_AEGIS_JOB = 'up{job=~"aegis-.*"}'
@@ -86,14 +112,7 @@ def explore_url(service: str, *, grafana_base: str) -> str:
     Explore ``panes=`` URLs break on current Grafana ("Could not parse Explore URL").
     """
     base = grafana_base.rstrip("/")
-    s = get_settings()
-    dash = (
-        getattr(s, "grafana_dashboard_path", None)
-        or os.environ.get("GRAFANA_DASHBOARD_PATH")
-        or "/d/ad6nckx/aegispilot-dashboard"
-    ).strip() or "/d/ad6nckx/aegispilot-dashboard"
-    if not dash.startswith("/"):
-        dash = "/" + dash
+    dash = _dashboard_path()
     svc = quote(service, safe="")
     return (
         f"{base}{dash}"
@@ -195,14 +214,7 @@ def _render_dashboard_png(
 
 def _try_grafana_render(service: str, grafana_base: str, token: str) -> Optional[bytes]:
     """Best-effort real Grafana dashboard PNG (needs API token + image renderer)."""
-    s = get_settings()
-    dash = (
-        getattr(s, "grafana_dashboard_path", None)
-        or os.environ.get("GRAFANA_DASHBOARD_PATH")
-        or "/d/ad6nckx/aegispilot-dashboard"
-    ).strip()
-    if not dash.startswith("/"):
-        dash = "/" + dash
+    dash = _dashboard_path()
     # /d/UID/slug → /render/d/UID/slug
     render_path = "/render" + dash if dash.startswith("/d/") else f"/render{dash}"
     url = (
@@ -217,6 +229,42 @@ def _try_grafana_render(service: str, grafana_base: str, token: str) -> Optional
             log.warning("grafana render unavailable status=%s bytes=%d", r.status_code, len(r.content))
             return None
         return r.content
+
+
+def _fetch_prom_panels(prom: str, service: str) -> tuple:
+    sel = _sel(service)
+    rate_pts = _query_range(prom, f'sum(rate(http_requests_total{{{sel}}}[1m])) or vector(0)')
+    ok_pts = _query_range(
+        prom, f'sum(rate(http_requests_total{{{sel},code=~"2.."}}[1m])) or vector(0)'
+    )
+    err5_pts = _query_range(
+        prom, f'sum(rate(http_requests_total{{{sel},code=~"5.."}}[1m])) or vector(0)'
+    )
+    avg_pts = _query_range(
+        prom,
+        f"("
+        f'sum(rate(http_request_duration_seconds_sum{{{sel}}}[1m])) '
+        f"/ "
+        f'clamp_min(sum(rate(http_request_duration_seconds_count{{{sel}}}[1m])), 1e-9)'
+        f") or vector(0)",
+    )
+    p95_pts = _query_range(
+        prom,
+        f"histogram_quantile(0.95, "
+        f"sum by (le) (rate(http_request_duration_seconds_bucket{{{sel}}}[1m]))) "
+        f"or vector(0)",
+    )
+    return rate_pts, ok_pts, err5_pts, avg_pts, p95_pts
+
+
+def _render_from_prom(prom: str, service: str, abs_path: Path) -> None:
+    rate_pts, ok_pts, err5_pts, avg_pts, p95_pts = _fetch_prom_panels(prom, service)
+    if not rate_pts and not err5_pts:
+        up_pts = _query_range(prom, _up_query(service)) or _query_range(prom, _UP_AEGIS_JOB)
+        pct_pts = _query_range(prom, _error_rate_query(service))
+        _render_dashboard_png(service, up_pts, [], pct_pts, [], [], abs_path)
+        return
+    _render_dashboard_png(service, rate_pts, ok_pts, err5_pts, avg_pts, p95_pts, abs_path)
 
 
 def capture_live_snapshot(service: str) -> Optional[dict[str, Any]]:
@@ -246,39 +294,7 @@ def capture_live_snapshot(service: str) -> Optional[dict[str, Any]]:
                 source = "grafana-render"
 
         if rendered is None:
-            sel = _sel(service)
-            rate_pts = _query_range(prom, f'sum(rate(http_requests_total{{{sel}}}[1m])) or vector(0)')
-            ok_pts = _query_range(
-                prom, f'sum(rate(http_requests_total{{{sel},code=~"2.."}}[1m])) or vector(0)'
-            )
-            err5_pts = _query_range(
-                prom, f'sum(rate(http_requests_total{{{sel},code=~"5.."}}[1m])) or vector(0)'
-            )
-            avg_pts = _query_range(
-                prom,
-                f"("
-                f'sum(rate(http_request_duration_seconds_sum{{{sel}}}[1m])) '
-                f"/ "
-                f'clamp_min(sum(rate(http_request_duration_seconds_count{{{sel}}}[1m])), 1e-9)'
-                f") or vector(0)",
-            )
-            p95_pts = _query_range(
-                prom,
-                f"histogram_quantile(0.95, "
-                f"sum by (le) (rate(http_request_duration_seconds_bucket{{{sel}}}[1m]))) "
-                f"or vector(0)",
-            )
-            # Fallback: if request series empty, still show up + 5xx %
-            if not rate_pts and not err5_pts:
-                up_pts = _query_range(prom, _up_query(service)) or _query_range(
-                    prom, _UP_AEGIS_JOB
-                )
-                pct_pts = _query_range(prom, _error_rate_query(service))
-                _render_dashboard_png(service, up_pts, [], pct_pts, [], [], abs_path)
-            else:
-                _render_dashboard_png(
-                    service, rate_pts, ok_pts, err5_pts, avg_pts, p95_pts, abs_path
-                )
+            _render_from_prom(prom, service, abs_path)
 
         raw = abs_path.read_bytes()
         link = explore_url(service, grafana_base=grafana) if grafana else ""
@@ -313,26 +329,27 @@ def ensure_alert_snapshot(alert) -> Any:
     def _is_seed_path(path: Any) -> bool:
         return bool(path) and "backend/seed" in str(path).replace("\\", "/")
 
+    def _apply_captured(captured: dict[str, Any]) -> Any:
+        alert.grafana_snapshot = captured["grafana_snapshot"]
+        meta = dict(alert.metadata or {})
+        if captured.get("grafana_explore_url"):
+            meta["grafana_explore_url"] = captured["grafana_explore_url"]
+        if captured.get("grafana_snapshot_b64"):
+            meta["grafana_snapshot_b64"] = captured["grafana_snapshot_b64"]
+        meta["snapshot_source"] = captured.get("source", "prometheus")
+        if _is_seed_path(seed):
+            meta["seed_snapshot_replaced"] = str(seed)
+        alert.metadata = meta
+        return alert
+
     if (s.prometheus_url or "").strip():
         captured = capture_live_snapshot(alert.service)
         if captured:
-            alert.grafana_snapshot = captured["grafana_snapshot"]
-            meta = dict(alert.metadata or {})
-            if captured.get("grafana_explore_url"):
-                meta["grafana_explore_url"] = captured["grafana_explore_url"]
-            if captured.get("grafana_snapshot_b64"):
-                meta["grafana_snapshot_b64"] = captured["grafana_snapshot_b64"]
-            meta["snapshot_source"] = captured.get("source", "prometheus")
-            if _is_seed_path(seed):
-                meta["seed_snapshot_replaced"] = str(seed)
-            alert.metadata = meta
-            return alert
-        # Do not keep demo seed PNGs when live Prom is configured but capture failed.
+            return _apply_captured(captured)
         if _is_seed_path(seed):
             alert.grafana_snapshot = None
         return _attach_explore_only()
 
     if _is_seed_path(seed) and (s.grafana_url or "").strip():
-        # Still attach a dashboard link even if we refuse to show seed art.
         return _attach_explore_only()
     return _attach_explore_only() if seed else alert

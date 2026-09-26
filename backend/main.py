@@ -42,62 +42,67 @@ from backend.services.stream import hub
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("aegisops.main")
 
+_MEDIA_PNG = "image/png"
+_MEDIA_JPEG = "image/jpeg"
+_JPEG_SUFFIXES = (".jpg", ".jpeg")
+
+
+def _media_for_snapshot(path_or_name: object | None) -> str:
+    name = str(path_or_name or "").lower()
+    if name.endswith(_JPEG_SUFFIXES):
+        return _MEDIA_JPEG
+    return _MEDIA_PNG
+
+
+def _build_storage(settings):
+    if settings.backend.lower() != "cloud":
+        return SQLiteStorage(settings.db_path)
+    from backend.services.firestore_storage import FirestoreStorage
+
+    return FirestoreStorage(settings.google_cloud_project)
+
+
+def _build_bus(settings):
+    if settings.backend.lower() != "cloud":
+        return InProcessBus()
+    from backend.services.pubsub_bus import PubSubBus
+
+    bus = PubSubBus(settings.google_cloud_project)
+    bus.ensure(create_pull_subscription=settings.pubsub_mode.lower() != "push")
+    return bus
+
+
+def _build_orchestrator(settings, deps: Deps):
+    if settings.orchestrator.lower() == "adk":
+        return AdkOrchestrator(deps)
+    return Orchestrator(deps)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
-    # Export Vertex config so ADK's Gemini + google-genai pick the Vertex backend.
     settings.apply_google_env()
 
-    # --- The one place impls are chosen. BACKEND=cloud swaps to Firestore. ---
-    if settings.backend.lower() == "cloud":
-        # Local import so `local` mode never needs the firestore package.
-        from backend.services.firestore_storage import FirestoreStorage
-
-        storage = FirestoreStorage(settings.google_cloud_project)
-    else:
-        storage = SQLiteStorage(settings.db_path)
-
-    # BACKEND=cloud also swaps the in-process bus for real Pub/Sub.
-    if settings.backend.lower() == "cloud":
-        from backend.services.pubsub_bus import PubSubBus
-
-        bus = PubSubBus(settings.google_cloud_project)
-        # Push mode (Cloud Run) needs only the topic; pull mode also needs the
-        # in-app subscription. Idempotent; fails loud on auth errors.
-        bus.ensure(create_pull_subscription=settings.pubsub_mode.lower() != "push")
-    else:
-        bus = InProcessBus()
-    # ------------------------------------------------------------------------
+    storage = _build_storage(settings)
+    bus = _build_bus(settings)
     storage.init_schema()
-    # Seed only when empty. Firestore writes are per-doc round-trips (~20s), so
-    # re-seeding every boot would make Cloud Run cold starts crawl; the fixtures
-    # are stable, and the seed_* scripts force a refresh when needed.
     if not storage.list_agents():
         seed_all(storage, settings.gemini_model)
         log.info("seeded fixtures")
     else:
         log.info("fixtures already present; skipping seed")
-    # Skip demo seed PNGs when live Prometheus is configured (K8s / real metrics).
     if not (settings.prometheus_url or "").strip():
         if not (GRAFANA_IMG.exists() and CART_OUT.exists() and PAYMENTS_OUT.exists()):
-            generate_grafana_all()  # local/demo only
+            generate_grafana_all()
 
     gate = ApprovalGate()
     deps = Deps(storage=storage, gemini=gemini, hub=hub, gate=gate)
-    # Orchestrator selection: real google-adk (default) or the local fallback.
-    # The local Orchestrator is never deleted — set ORCHESTRATOR=local to use it.
-    if settings.orchestrator.lower() == "adk":
-        orchestrator = AdkOrchestrator(deps)
-    else:
-        orchestrator = Orchestrator(deps)
-    # In PUSH mode (Cloud Run) Pub/Sub delivers to POST /api/pubsub/push, so we
-    # do NOT start an in-app pull subscriber (an instance at scale-zero can't
-    # pull). Otherwise subscribe the orchestrator to the bus directly.
-    if not (settings.backend.lower() == "cloud" and settings.pubsub_mode.lower() == "push"):
-        bus.subscribe(orchestrator.handle_alert)
-    else:
+    orchestrator = _build_orchestrator(settings, deps)
+    push_only = settings.backend.lower() == "cloud" and settings.pubsub_mode.lower() == "push"
+    if push_only:
         log.info("Pub/Sub PUSH mode: incidents arrive via POST /api/pubsub/push")
+    else:
+        bus.subscribe(orchestrator.handle_alert)
 
     app.state.settings = settings
     app.state.storage = storage
@@ -105,11 +110,12 @@ async def lifespan(app: FastAPI):
     app.state.gate = gate
     app.state.orchestrator = orchestrator
 
-    log.info("AegisPilot ready. orchestrator=%s  backend=%s  vertex=%s  model=%s  slack=%s",
-             type(orchestrator).__name__, settings.backend, settings.use_vertex,
-             settings.gemini_model, settings.has_slack)
+    log.info(
+        "AegisPilot ready. orchestrator=%s  backend=%s  vertex=%s  model=%s  slack=%s",
+        type(orchestrator).__name__, settings.backend, settings.use_vertex,
+        settings.gemini_model, settings.has_slack,
+    )
     yield
-    # --- shutdown: stop the Pub/Sub streaming pull cleanly (no-op for local) ---
     if hasattr(bus, "close"):
         bus.close()
 
@@ -343,44 +349,32 @@ async def grafana(incident_id: str, request: Request):
     so a pod recycle does not blank the Diagnosis panel.
     """
     from fastapi.responses import Response
+    import base64
 
     inc = request.app.state.storage.get_incident(incident_id)
     alert = getattr(inc, "alert", None) if inc else None
     meta = (getattr(alert, "metadata", None) or {}) if alert else {}
     snap = getattr(alert, "grafana_snapshot", None) if alert else None
-    if not (alert and (snap or meta.get("grafana_snapshot_b64"))):
+    b64 = meta.get("grafana_snapshot_b64") if meta else None
+    if not (alert and (snap or b64)):
         raise HTTPException(404, "no snapshot for this incident")
 
-    b64 = meta.get("grafana_snapshot_b64")
-    # Prefer live base64 over on-disk seed PNGs (demo images ship in the image).
     seed_path = bool(snap) and ("backend/seed" in str(snap).replace("\\", "/"))
-    if b64 and (meta.get("snapshot_source") in ("prometheus", "grafana-render") or seed_path or not snap):
-        import base64
+    live_src = meta.get("snapshot_source") in ("prometheus", "grafana-render")
+    prefer_b64 = bool(b64) and (live_src or seed_path or not snap)
 
-        media = "image/png"
-        if snap and str(snap).lower().endswith((".jpg", ".jpeg")):
-            media = "image/jpeg"
-        return Response(content=base64.b64decode(b64), media_type=media)
+    if prefer_b64:
+        return Response(content=base64.b64decode(b64), media_type=_media_for_snapshot(snap))
 
     if snap:
         p = Path(snap)
         if not p.is_absolute():
             p = SEED_DIR.parent.parent / p
-        if p.exists() and not seed_path:
-            media = "image/jpeg" if p.suffix.lower() in (".jpg", ".jpeg") else "image/png"
-            return FileResponse(p, media_type=media)
-        if p.exists() and seed_path and not b64:
-            # Last resort only when no live snapshot was captured.
-            media = "image/jpeg" if p.suffix.lower() in (".jpg", ".jpeg") else "image/png"
-            return FileResponse(p, media_type=media)
+        if p.exists() and (not seed_path or not b64):
+            return FileResponse(p, media_type=_media_for_snapshot(p))
 
     if b64:
-        import base64
-
-        media = "image/png"
-        if snap and str(snap).lower().endswith((".jpg", ".jpeg")):
-            media = "image/jpeg"
-        return Response(content=base64.b64decode(b64), media_type=media)
+        return Response(content=base64.b64decode(b64), media_type=_media_for_snapshot(snap))
 
     raise HTTPException(404, "snapshot not available")
 

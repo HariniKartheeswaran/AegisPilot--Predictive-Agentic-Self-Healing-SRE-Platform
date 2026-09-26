@@ -34,6 +34,8 @@ _NODEPORTS = {
     "cart-svc": 30082,
     "payments-svc": 30083,
 }
+_DEFAULT_GOOD_VERSION = "v1.0.0"
+_PRIVATE_HTTP = "http"
 
 
 def _mode() -> str:
@@ -64,8 +66,8 @@ def _scrape_base(service: str) -> str:
     explicit = (overrides.get(service) or "").strip().rstrip("/")
     if explicit:
         return explicit
-    # Default Compose service DNS (same names as K8s Deployments).
-    return f"http://{service}:8080"
+    # Cleartext is intentional for private Compose/cluster networks.
+    return f"{_PRIVATE_HTTP}://{service}:8080"
 
 
 def _env_val(containers: list, name: str, default: str = "") -> str:
@@ -100,23 +102,23 @@ def _wait_ready(apps, ns: str, deploy: str, timeout_s: float = 90.0) -> None:
     _wait_rollout(apps, ns, deploy, timeout_s=timeout_s)
 
 
+def _load_target_urls(service: str) -> list[str]:
+    if docker_mode():
+        return [f"{_scrape_base(service)}/api/work"]
+    ns = get_settings().k8s_namespace
+    urls = [
+        f"{_PRIVATE_HTTP}://{service}.{ns}.svc.cluster.local:8080/api/work",
+        f"{_PRIVATE_HTTP}://{service}:8080/api/work",
+    ]
+    port = _NODEPORTS.get(service)
+    if port:
+        urls.append(f"{_PRIVATE_HTTP}://13.207.225.219:{port}/api/work")
+    return urls
+
+
 def _generate_load(service: str, bursts: int = 80) -> dict[str, int]:
     """Hit scrape /api/work so Prom sees 5xx under ERROR_RATE."""
-    urls: list[str] = []
-    if docker_mode():
-        urls.append(f"{_scrape_base(service)}/api/work")
-    else:
-        ns = get_settings().k8s_namespace
-        urls.extend(
-            [
-                f"http://{service}.{ns}.svc.cluster.local:8080/api/work",
-                f"http://{service}:8080/api/work",
-            ]
-        )
-        port = _NODEPORTS.get(service)
-        if port:
-            urls.append(f"http://13.207.225.219:{port}/api/work")
-
+    urls = _load_target_urls(service)
     ok = err = 0
     with httpx.Client(timeout=3.0) as client:
         for _ in range(bursts):
@@ -206,29 +208,63 @@ def _logs_from_scrape_admin(service: str, limit: int = 80) -> list[LogLine]:
     return out[-limit:]
 
 
-def _logs_from_loki(service: str, limit: int = 80) -> list[LogLine]:
+def _loki_base_url() -> str:
     s = get_settings()
     base = (
         getattr(s, "loki_url", None)
-        or __import__("os").environ.get("LOKI_URL")
+        or os.environ.get("LOKI_URL")
         or ""
     ).strip()
-    if not base and (s.grafana_url or "").strip():
-        # Same observability host, Loki on 3100
+    if base:
+        return base
+    if (s.grafana_url or "").strip():
         host = s.grafana_url.rstrip("/").rsplit(":", 1)[0]
-        base = f"{host}:3100"
+        return f"{host}:3100"
+    return ""
+
+
+def _log_level_from_message(msg: str) -> str:
+    if re.search(r"\berror\b|request_failed|\b5\d\d\b", msg, re.I):
+        return "ERROR"
+    if re.search(r"\bwarn", msg, re.I):
+        return "WARN"
+    return "INFO"
+
+
+def _parse_loki_result(service: str, body: dict, limit: int) -> list[LogLine]:
+    out: list[LogLine] = []
+    for stream in (body.get("data") or {}).get("result") or []:
+        for ts_ns, msg in stream.get("values") or []:
+            try:
+                ts_ms = int(int(ts_ns) / 1_000_000)
+            except (TypeError, ValueError):
+                ts_ms = now_ms()
+            out.append(
+                LogLine(
+                    id=f"log_live_{service}_{ts_ms}_{len(out)}",
+                    service=service,
+                    ts=ts_ms,
+                    level=_log_level_from_message(msg),
+                    message=msg.strip()[:500],
+                )
+            )
+    out.sort(key=lambda x: x.ts)
+    return out[-limit:]
+
+
+def _logs_from_loki(service: str, limit: int = 80) -> list[LogLine]:
+    base = _loki_base_url()
     if not base:
         return []
     end_ns = int(time.time() * 1e9)
     start_ns = end_ns - 15 * 60 * 10**9
-    query = '{app="%s"}' % service
     url = f"{base.rstrip('/')}/loki/api/v1/query_range"
     try:
         with httpx.Client(timeout=8.0) as client:
             r = client.get(
                 url,
                 params={
-                    "query": query,
+                    "query": '{app="%s"}' % service,
                     "start": str(start_ns),
                     "end": str(end_ns),
                     "limit": str(limit),
@@ -240,28 +276,7 @@ def _logs_from_loki(service: str, limit: int = 80) -> list[LogLine]:
     except Exception as exc:
         log.warning("loki log fetch failed: %s", exc)
         return []
-
-    out: list[LogLine] = []
-    for stream in (body.get("data") or {}).get("result") or []:
-        for ts_ns, msg in stream.get("values") or []:
-            try:
-                ts_ms = int(int(ts_ns) / 1_000_000)
-            except (TypeError, ValueError):
-                ts_ms = now_ms()
-            level = "ERROR" if re.search(r"\berror\b|request_failed|\b5\d\d\b", msg, re.I) else (
-                "WARN" if re.search(r"\bwarn", msg, re.I) else "INFO"
-            )
-            out.append(
-                LogLine(
-                    id=f"log_live_{service}_{ts_ms}_{len(out)}",
-                    service=service,
-                    ts=ts_ms,
-                    level=level,
-                    message=msg.strip()[:500],
-                )
-            )
-    out.sort(key=lambda x: x.ts)
-    return out[-limit:]
+    return _parse_loki_result(service, body, limit)
 
 
 def _logs_from_k8s(service: str, limit: int = 80) -> list[LogLine]:
@@ -322,7 +337,7 @@ def _prepare_k8s_fire(
     apps, _ = _load_apps()
     dep = apps.read_namespaced_deployment(service, ns)
     containers = dep.spec.template.spec.containers or []
-    good_ver = _env_val(containers, "SERVICE_VERSION", "v1.0.0")
+    good_ver = _env_val(containers, "SERVICE_VERSION", _DEFAULT_GOOD_VERSION)
     bad_ver = f"v-live-{int(time.time()) % 100000}"
 
     _patch_env(
@@ -358,10 +373,10 @@ def _prepare_docker_fire(
     error_rate: float,
 ) -> dict[str, Any]:
     current = _get_docker_fault(service)
-    good_ver = str(current.get("service_version") or "v1.0.0")
+    good_ver = str(current.get("service_version") or _DEFAULT_GOOD_VERSION)
     # Keep a stable rollback target across repeated fires in one session.
     if good_ver.startswith("v-live-"):
-        good_ver = "v1.0.0"
+        good_ver = _DEFAULT_GOOD_VERSION
     bad_ver = f"v-live-{int(time.time()) % 100000}"
 
     _set_docker_fault(
