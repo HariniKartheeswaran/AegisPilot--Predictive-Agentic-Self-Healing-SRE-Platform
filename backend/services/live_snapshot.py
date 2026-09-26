@@ -45,6 +45,8 @@ AMBER = "#d29922"
 
 SNAP_DIR = Path("/tmp/aegis_snapshots")
 _SCRAPE_SERVICES = {"checkout-svc", "cart-svc", "payments-svc"}
+# PromQL for cluster-wide up series (duplicated literal → single constant for Sonar).
+_UP_AEGIS_JOB = 'up{job=~"aegis-.*"}'
 _SVC_COLOR = {
     "cart-svc": GREEN,
     "checkout-svc": YELLOW,
@@ -75,15 +77,14 @@ def _error_rate_query(service: str) -> str:
 def _up_query(service: str) -> str:
     if service in _SCRAPE_SERVICES:
         return f'up{{service="{service}"}}'
-    return 'up{job=~"aegis-.*"}'
+    return _UP_AEGIS_JOB
 
 
-def explore_url(service: str, *, grafana_base: str, prom_datasource_uid: str = "") -> str:
+def explore_url(service: str, *, grafana_base: str) -> str:
     """Deep-link into the live AegisPilot Grafana dashboard (never Explore panes).
 
     Explore ``panes=`` URLs break on current Grafana ("Could not parse Explore URL").
     """
-    del prom_datasource_uid  # unused; kept for call-site compatibility
     base = grafana_base.rstrip("/")
     s = get_settings()
     dash = (
@@ -270,7 +271,7 @@ def capture_live_snapshot(service: str) -> Optional[dict[str, Any]]:
             # Fallback: if request series empty, still show up + 5xx %
             if not rate_pts and not err5_pts:
                 up_pts = _query_range(prom, _up_query(service)) or _query_range(
-                    prom, 'up{job=~"aegis-.*"}'
+                    prom, _UP_AEGIS_JOB
                 )
                 pct_pts = _query_range(prom, _error_rate_query(service))
                 _render_dashboard_png(service, up_pts, [], pct_pts, [], [], abs_path)

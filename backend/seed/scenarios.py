@@ -21,6 +21,7 @@ from backend.services.storage import StorageService
 
 MIN = 60_000
 DAY = 24 * 60 * MIN
+DEPLOYER_DAVE = "dave@corp.dev"
 
 
 @dataclass
@@ -92,7 +93,7 @@ def _cart_deploys() -> list[Deploy]:
         Deploy(id="dep_cart181", service="cart-svc", version="v1.8.1", deployed_at=t - 11 * MIN,
                deployed_by="carol@corp.dev", commit_sha="77aa910", rollback_target="v1.8.0"),
         Deploy(id="dep_cart180", service="cart-svc", version="v1.8.0", deployed_at=t - 5 * DAY,
-               deployed_by="dave@corp.dev", commit_sha="34bc001", rollback_target="v1.7.9"),
+               deployed_by=DEPLOYER_DAVE, commit_sha="34bc001", rollback_target="v1.7.9"),
         Deploy(id="dep_cart179", service="cart-svc", version="v1.7.9", deployed_at=t - 12 * DAY,
                deployed_by="carol@corp.dev", commit_sha="90de112", rollback_target="v1.7.8"),
     ]
@@ -131,11 +132,11 @@ def _payments_deploys() -> list[Deploy]:
     t = now_ms()
     return [
         Deploy(id="dep_pay553", service="payments-svc", version="v5.5.3", deployed_at=t - 13 * MIN,
-               deployed_by="dave@corp.dev", commit_sha="c0ffee1", rollback_target="v5.5.2"),
+               deployed_by=DEPLOYER_DAVE, commit_sha="c0ffee1", rollback_target="v5.5.2"),
         Deploy(id="dep_pay552", service="payments-svc", version="v5.5.2", deployed_at=t - 4 * DAY,
                deployed_by="erin@corp.dev", commit_sha="b0bcaf3", rollback_target="v5.5.1"),
         Deploy(id="dep_pay551", service="payments-svc", version="v5.5.1", deployed_at=t - 10 * DAY,
-               deployed_by="dave@corp.dev", commit_sha="1dec0de", rollback_target="v5.5.0"),
+               deployed_by=DEPLOYER_DAVE, commit_sha="1dec0de", rollback_target="v5.5.0"),
     ]
 
 

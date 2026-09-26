@@ -42,6 +42,7 @@ _DEFAULT_ALLOWLIST = (
     "checkout-svc,cart-svc,payments-svc,"
     "aegis-warroom-blue,aegis-warroom-green"
 )
+_STEP_VERIFY_ROLLOUT = "Verify rollout"
 
 
 def _mode() -> str:
@@ -262,7 +263,7 @@ async def _execute_kubernetes(plan: RemediationPlan, service: str) -> ExecResult
             )
             add("Apply known-good config", True, detail)
             ready = await asyncio.to_thread(_wait_rollout, apps, ns, deploy)
-            add("Verify rollout", True, ready)
+            add(_STEP_VERIFY_ROLLOUT, True, ready)
 
         elif plan.action == "scale_out":
             dep = await asyncio.to_thread(apps.read_namespaced_deployment, deploy, ns)
@@ -271,7 +272,7 @@ async def _execute_kubernetes(plan: RemediationPlan, service: str) -> ExecResult
             detail = await asyncio.to_thread(_scale, apps, ns, deploy, desired)
             add("Scale out", True, detail)
             ready = await asyncio.to_thread(_wait_rollout, apps, ns, deploy)
-            add("Verify rollout", True, ready)
+            add(_STEP_VERIFY_ROLLOUT, True, ready)
 
         elif plan.action == "restart":
             # Clear injected failure then restart so metrics recover.
@@ -282,7 +283,7 @@ async def _execute_kubernetes(plan: RemediationPlan, service: str) -> ExecResult
             detail = await asyncio.to_thread(_rollout_restart, apps, ns, deploy)
             add("Rolling restart", True, detail)
             ready = await asyncio.to_thread(_wait_rollout, apps, ns, deploy)
-            add("Verify rollout", True, ready)
+            add(_STEP_VERIFY_ROLLOUT, True, ready)
 
         elif plan.action == "flag_off":
             detail = await asyncio.to_thread(
@@ -291,7 +292,7 @@ async def _execute_kubernetes(plan: RemediationPlan, service: str) -> ExecResult
             )
             add("Disable failure flags", True, detail)
             ready = await asyncio.to_thread(_wait_rollout, apps, ns, deploy)
-            add("Verify rollout", True, ready)
+            add(_STEP_VERIFY_ROLLOUT, True, ready)
 
         else:
             add(f"Execute {plan.action}", False, f"unsupported action {plan.action}")

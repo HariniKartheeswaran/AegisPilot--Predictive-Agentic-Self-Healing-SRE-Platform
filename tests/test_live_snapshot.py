@@ -13,8 +13,8 @@ def test_explore_url_contains_grafana_and_query():
     assert "from=now-1h" in url
 
 
-def test_ensure_keeps_seed_when_live_prom_unreachable(monkeypatch):
-    """Seed demo PNG is only kept when live capture fails."""
+def test_ensure_clears_seed_when_live_prom_configured_but_unreachable(monkeypatch):
+    """Live Prom configured: do not keep demo seed PNG if capture fails."""
     monkeypatch.setenv("PROMETHEUS_URL", "http://example.invalid:9090")
     monkeypatch.setenv("GRAFANA_URL", "http://3.111.113.151:3000")
     from backend.config import get_settings
@@ -26,7 +26,7 @@ def test_ensure_keeps_seed_when_live_prom_unreachable(monkeypatch):
         grafana_snapshot="backend/seed/grafana_checkout_spike.png",
     )
     out = ensure_alert_snapshot(alert)
-    assert out.grafana_snapshot == "backend/seed/grafana_checkout_spike.png"
+    assert out.grafana_snapshot is None
     assert "grafana_explore_url" in out.metadata
     get_settings.cache_clear()
 
