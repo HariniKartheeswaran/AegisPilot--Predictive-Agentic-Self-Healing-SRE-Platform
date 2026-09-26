@@ -1,7 +1,7 @@
 """Tests for FastAPI route handlers in backend.main."""
 
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -10,6 +10,7 @@ from backend.main import (
     Decision,
     approve,
     audit,
+    demo_fire,
     grafana,
     health,
     incident,
@@ -18,6 +19,8 @@ from backend.main import (
     registry,
     reject,
 )
+from backend.models import Alert
+
 
 class FakeOrchestrator:
     pass
@@ -393,3 +396,130 @@ async def test_grafana_returns_existing_png_snapshot(tmp_path):
 
     assert result.path == snapshot
     assert result.media_type == "image/png"
+
+
+@pytest.mark.asyncio
+async def test_demo_fire_live_mode():
+    alert = Alert(
+        alert="HighErrorRate",
+        service="checkout-svc",
+        error_rate="42%",
+        metadata={"live_fire": True},
+    )
+    bus = SimpleNamespace(publish=AsyncMock())
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(storage=object(), bus=bus))
+    )
+    prepared = {"alert": alert, "load": {"ok": 1, "err": 1, "total": 2}}
+
+    with (
+        patch("backend.services.live_fire.live_mode_enabled", return_value=True),
+        patch(
+            "backend.services.live_fire.prepare_live_fire",
+            return_value=prepared,
+        ),
+    ):
+        result = await demo_fire(request)
+
+    assert result["live"] is True
+    assert result["scenario"] == "live"
+    assert result["service"] == "checkout-svc"
+    bus.publish.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_demo_fire_seed_scenario():
+    bus = SimpleNamespace(publish=AsyncMock())
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(storage=object(), bus=bus))
+    )
+    sc = SimpleNamespace(
+        key="hikaricp",
+        alert={
+            "alert": "HighErrorRate",
+            "service": "checkout-svc",
+            "error_rate": "35%",
+        },
+    )
+    with (
+        patch("backend.services.live_fire.live_mode_enabled", return_value=False),
+        patch("backend.main.next_scenario", return_value=sc),
+    ):
+        result = await demo_fire(request)
+
+    assert result["accepted"] is True
+    assert result["scenario"] == "hikaricp"
+    bus.publish.assert_awaited_once()
+@pytest.mark.asyncio
+async def test_post_alert_publishes():
+    from backend.main import post_alert
+
+    bus = SimpleNamespace(publish=AsyncMock())
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(bus=bus)))
+    alert = Alert(alert="HighErrorRate", service="cart-svc", error_rate="20%")
+    out = await post_alert(alert, request)
+    assert out["accepted"] is True
+    bus.publish.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_record_deploy():
+    from backend.main import record_deploy
+
+    storage = MagicMock()
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(storage=storage)))
+    out = await record_deploy(
+        request,
+        service="checkout-svc",
+        version="v1.2.3",
+        commit_sha="abcdef123456",
+        deployed_by="jenkins",
+        rollback_target="v1.2.2",
+    )
+    assert out["accepted"] is True
+    assert out["version"] == "v1.2.3"
+    storage.add_deploy.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_pubsub_push_acks():
+    from backend.main import pubsub_push
+    import base64
+    import json
+
+    alert = {"alert": "HighErrorRate", "service": "checkout-svc", "error_rate": "10%"}
+    raw = base64.b64encode(json.dumps(alert).encode()).decode()
+    orchestrator = SimpleNamespace(handle_alert=AsyncMock())
+    request = SimpleNamespace(
+        json=AsyncMock(return_value={"message": {"data": raw}}),
+        app=SimpleNamespace(state=SimpleNamespace(orchestrator=orchestrator)),
+    )
+    resp = await pubsub_push(request)
+    assert resp.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_custom_incident_ingests_logs(tmp_path, monkeypatch):
+    from backend.main import custom_incident
+
+    monkeypatch.setattr("backend.main.SEED_DIR", tmp_path / "seed")
+    storage = MagicMock()
+    bus = SimpleNamespace(publish=AsyncMock())
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(storage=storage, bus=bus))
+    )
+    out = await custom_incident(
+        request,
+        service="checkout-svc",
+        alert="HighErrorRate",
+        error_rate="50%",
+        logs="ERROR pool exhausted\nWARN slow query\nok path",
+        deploy_version="v9.9.9",
+        rollback_target="v9.9.8",
+        image=None,
+    )
+    assert out["accepted"] is True
+    assert out["logs_ingested"] == 3
+    assert out["deploy"] is True
+    assert storage.add_log.call_count == 3
+    storage.add_deploy.assert_called_once()
