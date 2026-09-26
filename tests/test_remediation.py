@@ -159,3 +159,176 @@ def test_docker_mode_rejects_non_scrape_target(monkeypatch):
         assert result.simulated is False
 
     asyncio.run(_run())
+
+
+def test_docker_mode_scale_out_clears_fault(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    monkeypatch.setenv("REMEDIATION_MODE", "docker")
+    monkeypatch.setenv("SCRAPE_URL_CHECKOUT", "http://checkout:8080")
+
+    fault_resp = MagicMock(status_code=200)
+    fault_resp.raise_for_status = MagicMock()
+    health_resp = MagicMock(status_code=200)
+    health_resp.raise_for_status = MagicMock()
+    client = AsyncMock()
+    client.post = AsyncMock(return_value=fault_resp)
+    client.get = AsyncMock(return_value=health_resp)
+    client.__aenter__.return_value = client
+    client.__aexit__.return_value = None
+
+    async def _run():
+        plan = build_plan(
+            action="scale_out",
+            service="checkout-svc",
+            rollback_target=None,
+            rationale="absorb load",
+        )
+        with patch("httpx.AsyncClient", return_value=client):
+            result = await execute_remediation(plan, "checkout-svc")
+        assert result.ok is True
+        assert any("scale_out" in (s.label or "") for s in result.steps)
+
+    asyncio.run(_run())
+
+
+def test_kubernetes_rollback_success(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock, patch
+
+    import backend.tools.remediation as rem
+
+    monkeypatch.setenv("REMEDIATION_MODE", "kubernetes")
+    monkeypatch.setenv("K8S_NAMESPACE", "aegispilot")
+    monkeypatch.setenv("K8S_REMEDIATE_DEPLOYMENTS", "checkout-svc")
+
+    env = SimpleNamespace(name="ERROR_RATE", value="0.5")
+    container = SimpleNamespace(name="app", env=[env])
+    dep = SimpleNamespace(
+        spec=SimpleNamespace(
+            replicas=2,
+            template=SimpleNamespace(spec=SimpleNamespace(containers=[container])),
+        ),
+        status=SimpleNamespace(available_replicas=2, updated_replicas=2),
+    )
+    apps = MagicMock()
+    apps.read_namespaced_deployment.return_value = dep
+    apps.patch_namespaced_deployment.return_value = None
+
+    async def _run():
+        plan = build_plan(
+            action="rollback",
+            service="checkout-svc",
+            rollback_target="v1.0.0",
+            rationale="bad deploy",
+        )
+        with patch.object(rem, "_load_apps_v1", return_value=apps):
+            result = await execute_remediation(plan, "checkout-svc")
+        assert result.ok is True
+        assert result.simulated is False
+        assert apps.patch_namespaced_deployment.called
+
+    asyncio.run(_run())
+
+
+def test_kubernetes_scale_out_and_restart(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock, patch
+
+    import backend.tools.remediation as rem
+
+    monkeypatch.setenv("REMEDIATION_MODE", "kubernetes")
+    monkeypatch.setenv("K8S_NAMESPACE", "aegispilot")
+    monkeypatch.setenv("K8S_REMEDIATE_DEPLOYMENTS", "checkout-svc")
+
+    env = SimpleNamespace(name="ERROR_RATE", value="0.0")
+    container = SimpleNamespace(name="app", env=[env])
+    dep = SimpleNamespace(
+        spec=SimpleNamespace(
+            replicas=1,
+            template=SimpleNamespace(spec=SimpleNamespace(containers=[container])),
+        ),
+        status=SimpleNamespace(available_replicas=2, updated_replicas=2),
+    )
+    apps = MagicMock()
+    apps.read_namespaced_deployment.return_value = dep
+
+    async def _run(action: str):
+        plan = build_plan(
+            action=action,
+            service="checkout-svc",
+            rollback_target="v1.0.0",
+            rationale=action,
+        )
+        with patch.object(rem, "_load_apps_v1", return_value=apps):
+            return await execute_remediation(plan, "checkout-svc")
+
+    scale = asyncio.run(_run("scale_out"))
+    restart = asyncio.run(_run("restart"))
+    flag = asyncio.run(_run("flag_off"))
+    assert scale.ok and restart.ok and flag.ok
+
+
+def test_kubernetes_connect_failure(monkeypatch):
+    from unittest.mock import patch
+
+    import backend.tools.remediation as rem
+
+    monkeypatch.setenv("REMEDIATION_MODE", "k8s")
+    monkeypatch.setenv("K8S_REMEDIATE_DEPLOYMENTS", "checkout-svc")
+
+    async def _run():
+        plan = build_plan(
+            action="restart",
+            service="checkout-svc",
+            rollback_target=None,
+            rationale="x",
+        )
+        with patch.object(rem, "_load_apps_v1", side_effect=RuntimeError("no cluster")):
+            result = await execute_remediation(plan, "checkout-svc")
+        assert result.ok is False
+        assert any("Connect" in s.label for s in result.steps)
+
+    asyncio.run(_run())
+
+
+def test_unknown_mode_falls_back_to_simulate(monkeypatch):
+    monkeypatch.setenv("REMEDIATION_MODE", "weird-mode")
+
+    async def _run():
+        plan = build_plan(
+            action="restart",
+            service="checkout-svc",
+            rollback_target=None,
+            rationale="x",
+        )
+        result = await execute_remediation(plan, "checkout-svc")
+        assert result.ok is True
+        assert result.simulated is True
+
+    asyncio.run(_run())
+
+
+def test_patch_scale_restart_helpers():
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    import backend.tools.remediation as rem
+
+    env = SimpleNamespace(name="A", value="1")
+    container = SimpleNamespace(name="app", env=[env])
+    dep = SimpleNamespace(
+        spec=SimpleNamespace(
+            replicas=1,
+            template=SimpleNamespace(spec=SimpleNamespace(containers=[container])),
+        ),
+        status=SimpleNamespace(available_replicas=1, updated_replicas=1),
+    )
+    apps = MagicMock()
+    apps.read_namespaced_deployment.return_value = dep
+
+    msg = rem._patch_container_env(apps, "ns", "checkout-svc", {"ERROR_RATE": "0"})
+    assert "ERROR_RATE" in msg
+    assert "replicas" in rem._scale(apps, "ns", "checkout-svc", 3)
+    assert "restart" in rem._rollout_restart(apps, "ns", "checkout-svc").lower()
+    assert "ready" in rem._wait_rollout(apps, "ns", "checkout-svc", timeout_s=1).lower()

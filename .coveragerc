@@ -1,0 +1,12 @@
+[run]
+source = backend
+omit =
+    backend/seed/*
+    */__pycache__/*
+    .venv/*
+
+[report]
+omit =
+    backend/seed/*
+show_missing = true
+skip_covered = false
