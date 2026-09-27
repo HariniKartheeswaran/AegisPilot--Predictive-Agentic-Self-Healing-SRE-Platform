@@ -323,7 +323,7 @@ async def test_reject_raises_409_when_no_gate_exists():
 @pytest.mark.asyncio
 async def test_grafana_raises_404_when_incident_has_no_snapshot():
     incident_obj = SimpleNamespace(
-        alert=SimpleNamespace(grafana_snapshot=None)
+        alert=SimpleNamespace(grafana_snapshot=None, metadata={})
     )
 
     storage = SimpleNamespace(
@@ -347,7 +347,8 @@ async def test_grafana_raises_404_when_incident_has_no_snapshot():
 async def test_grafana_raises_404_when_snapshot_file_missing(tmp_path):
     incident_obj = SimpleNamespace(
         alert=SimpleNamespace(
-            grafana_snapshot=str(tmp_path / "missing.png")
+            grafana_snapshot=str(tmp_path / "missing.png"),
+            metadata={},
         )
     )
 
@@ -375,7 +376,8 @@ async def test_grafana_returns_existing_png_snapshot(tmp_path):
 
     incident_obj = SimpleNamespace(
         alert=SimpleNamespace(
-            grafana_snapshot=str(snapshot)
+            grafana_snapshot=str(snapshot),
+            metadata={},
         )
     )
 
