@@ -210,7 +210,8 @@ def _try_grafana_render(service: str, grafana_base: str, token: str) -> Optional
         f"&tz=UTC&var-service={quote(service, safe='')}"
     )
     headers = {"Authorization": f"Bearer {token}"}
-    with httpx.Client(timeout=25.0, follow_redirects=False) as client:
+    # Fail fast — renderer 500s were adding ~25s to every Diagnosis step.
+    with httpx.Client(timeout=5.0, follow_redirects=False) as client:
         r = client.get(url, headers=headers)
         if r.status_code != 200 or not r.content.startswith(b"\x89PNG"):
             log.warning("grafana render unavailable status=%s bytes=%d", r.status_code, len(r.content))

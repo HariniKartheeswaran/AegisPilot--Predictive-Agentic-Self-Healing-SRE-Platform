@@ -112,9 +112,19 @@ Return JSON:
                 note="non-destructive action; no human gate required",
             )
 
-        # 4a. Rejected / timed-out → close as REJECTED, do NOT touch infra ---
+        # 4a. Rejected / timed-out → close as REJECTED, clear live inject so
+        # Prometheus stops re-firing (otherwise AM storms more incidents).
         if not gate_decision.approved:
             await ctx.emit("rejected", agent=self.name, approver=gate_decision.approver)
+            try:
+                from backend.services.live_fire import clear_live_inject, live_mode_enabled
+
+                if live_mode_enabled():
+                    import asyncio
+
+                    await asyncio.to_thread(clear_live_inject, service)
+            except Exception:  # noqa: BLE001
+                pass
             await ctx.transition(IncidentStatus.REJECTED)
             return
 
