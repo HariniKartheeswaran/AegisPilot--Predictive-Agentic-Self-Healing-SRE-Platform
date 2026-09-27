@@ -1,16 +1,17 @@
-# Same SLO rules as Compose — source of truth for EC2 Prometheus (final/K8s path).
-# Copy onto the observability host (PROMETHEUS_URL host) or mount via your Prom config.
+# Aegis scrape SLO rules — EC2 Prometheus (real Prom → AM → War Room path).
+# Group interval 15s so Warning/Critical can Pending→Firing within ~30–45s of a live inject.
 groups:
   - name: aegis_scrape
+    interval: 15s
     rules:
       - alert: HighErrorRateWarning
         expr: |
           (
-            sum by (service) (rate(http_requests_total{code=~"5.."}[1m]))
+            sum by (service) (rate(http_requests_total{code=~"5.."}[30s]))
             /
-            clamp_min(sum by (service) (rate(http_requests_total[1m])), 0.001)
+            clamp_min(sum by (service) (rate(http_requests_total[30s])), 0.001)
           ) > 0.08
-        for: 20s
+        for: 15s
         labels:
           severity: warning
           stage: pre
@@ -22,9 +23,9 @@ groups:
       - alert: HighErrorRate
         expr: |
           (
-            sum by (service) (rate(http_requests_total{code=~"5.."}[1m]))
+            sum by (service) (rate(http_requests_total{code=~"5.."}[30s]))
             /
-            clamp_min(sum by (service) (rate(http_requests_total[1m])), 0.001)
+            clamp_min(sum by (service) (rate(http_requests_total[30s])), 0.001)
           ) > 0.20
         for: 30s
         labels:

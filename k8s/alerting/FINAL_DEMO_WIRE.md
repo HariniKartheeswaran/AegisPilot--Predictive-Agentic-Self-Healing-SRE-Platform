@@ -1,52 +1,37 @@
-# Final demo — backup video + live day
+# Final demo — real inject path (not fake webhook)
 
-## Commit / deploy (do once today)
+## Why Prom stayed green
 
-1. Code is on **your fork** `feature/k8s` (Fire speed + AM dedup fixes).
-2. Open PR → Harini `feature/k8s` → merge.
-3. Jenkins **aegisops-ci** from that branch:
-   - `DEPLOY_ENABLED` = **true**
-   - `RUN_SONAR` = false (skip for speed)
-   - Promote when prompted.
-4. Smoke (30s):
-   - http://13.207.225.219/api/health
-   - http://13.207.225.219/api/pre-alerts → JSON (not 404)
-   - http://13.207.225.219:30903/-/healthy
-   - http://3.111.113.151:9090/alerts → 2 rules (often green/inactive)
+Prometheus had `evaluation_interval: 1m`. Rules only checked once a minute, so
+Fire healed before alerts could go Pending→Firing. That looked “always green.”
 
-## Tabs to open (video + demo day)
+## Fix (real system)
 
-1. War Room — http://13.207.225.219/
-2. Prometheus Alerts — http://3.111.113.151:9090/alerts
-3. Alertmanager — http://13.207.225.219:30903/#/alerts
-4. Grafana (optional) — http://3.111.113.151:3000
-5. Slack `#…` where AegisOps posts (optional)
+1. Rules evaluate every **15s**; warning `for: 15s`, critical `for: 30s`
+2. War Room Fire keeps real `/api/work` load ~**120s** after inject
+3. Critical AM→bus suppressed during Fire (one agent run); **warning pre-alert still real**
 
-**Do not open Jenkins on camera.** It already deployed.
+## Deploy once
 
-## Backup video script (~4–6 min)
+### A — Code (Jenkins)
+Merge `feature/k8s` → Jenkins `DEPLOY_ENABLED=true` → promote.
 
-Say: *“Live fault on checkout → Prometheus detects → Alertmanager routes → War Room agents remediate.”*
+### B — Prometheus host `3.111.113.151` (required for red alerts)
+Copy updated `k8s/alerting/rules.yml` + `wire-ec2-prometheus.sh`, then:
 
-1. **War Room** — click **Fire Incident once**. Spinner should clear in ~seconds (not minutes). Agents start.
-2. **Prometheus** — while errors are up, show **Pending/Firing** (red).  
-   If still green, wait ~30–60s or keep talking over Triage.
-3. **Alertmanager** — show the same alert group (`HighErrorRateWarning` / critical).
-4. **War Room** — yellow **PRE-ALERT** if present; walk agents; when **Approve** appears → click **Approve**.
-5. **Resolved** + RCA. Prom returns **Inactive/green** = healed.
-6. **Slack** — show **RESOLVED** post (not REJECTED).
+```bash
+sudo NODE_IP=13.207.225.219 bash wire-ec2-prometheus.sh ./rules.yml
+```
 
-**Rules while recording**
-- One Fire only. Do not spam.
-- Approve within a few minutes (timeout → Slack REJECTED).
-- Green Prom *before* Fire is healthy; green *after* Resolve is success.
+Confirm http://3.111.113.151:9090/alerts rules show; Status → Config has `evaluation_interval: 15s`.
 
-## Live demo day (same flow)
+## Demo (one Fire — real value)
 
-Same tabs + same script. Worst case: play this backup video.
+Tabs: War Room | Prom Alerts | AM | Slack
 
-## Already wired (no redo unless broken)
+1. **Fire Incident** once  
+2. ~20–45s later → Prom **Pending/Firing** (red) → AM group → War Room **yellow PRE-ALERT** → Ack  
+3. Agents → **Approve** → **Resolved**  
+4. Prom returns **green** = healed  
 
-- Alertmanager on K8s `:30903`
-- EC2 Prom rules → AM
-- War Room webhook + pre-alerts
+No Jenkins on camera. No curl webhook for judges.
