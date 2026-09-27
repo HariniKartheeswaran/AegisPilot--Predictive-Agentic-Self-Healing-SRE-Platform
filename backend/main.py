@@ -183,8 +183,9 @@ async def demo_fire(request: Request):
     """Fire an incident.
 
     Live K8s mode (REMEDIATION_MODE=kubernetes + PROMETHEUS_URL): patches a real
-    scrape Deployment ERROR_RATE and publishes immediately. Rollout + load run in
-    the background so the UI spinner does not wait  several minutes.
+    scrape Deployment ERROR_RATE and publishes immediately. Background load runs
+    long enough for Prometheus (15s eval) to Pending→Firing → AM pre-alert while
+    agents work. Critical AM→bus is suppressed so Fire does not double-open.
 
     Otherwise: rotating demo scenario (local / offline).
     """
@@ -203,12 +204,13 @@ async def demo_fire(request: Request):
             prepare_live_fire, storage, "checkout-svc", 0.42
         )
         alert = prepared["alert"]
-        # Prevent Prom→AM critical from opening a second pipeline for the same Fire.
+        # One agent pipeline from Fire; Prom→AM still delivers warning pre-alerts.
         suppress_am_full_for(alert.service, 300.0)
-        await request.app.state.bus.publish(alert)
+        # Start load BEFORE publish so scrape/rate windows fill as agents begin.
         asyncio.create_task(
-            asyncio.to_thread(warm_live_metrics, storage, alert.service, 24)
+            asyncio.to_thread(warm_live_metrics, storage, alert.service, 24, 120.0)
         )
+        await request.app.state.bus.publish(alert)
         return {
             "accepted": True,
             "scenario": "live",
