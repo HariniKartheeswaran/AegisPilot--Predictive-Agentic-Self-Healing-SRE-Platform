@@ -381,12 +381,13 @@ async def grafana(incident_id: str, request: Request):
     from fastapi.responses import Response
 
     inc = request.app.state.storage.get_incident(incident_id)
-    if not (inc and inc.alert and (inc.alert.grafana_snapshot or (inc.alert.metadata or {}).get("grafana_snapshot_b64"))):
+    alert = getattr(inc, "alert", None) if inc else None
+    meta = (getattr(alert, "metadata", None) or {}) if alert else {}
+    snap = getattr(alert, "grafana_snapshot", None) if alert else None
+    b64 = meta.get("grafana_snapshot_b64") if meta else None
+    if not (alert and (snap or b64)):
         raise HTTPException(404, "no snapshot for this incident")
 
-    meta = inc.alert.metadata or {}
-    snap = inc.alert.grafana_snapshot
-    b64 = meta.get("grafana_snapshot_b64")
     # Prefer live base64 over on-disk seed PNGs (demo images ship in the image).
     seed_path = bool(snap) and ("backend/seed" in str(snap).replace("\\", "/"))
     if b64 and (meta.get("snapshot_source") in ("prometheus", "grafana-render") or seed_path or not snap):
