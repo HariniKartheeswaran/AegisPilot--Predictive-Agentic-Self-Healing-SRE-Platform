@@ -1,5 +1,6 @@
 import { useEffect, useReducer, useRef, useState } from "react";
-import type { StreamEvent } from "./types";
+import { api } from "./api";
+import type { PreAlert, StreamEvent } from "./types";
 import { initialState, reduce } from "./warroom";
 
 // The backend (sse_starlette) tags every SSE message with a named event equal
@@ -25,6 +26,9 @@ const EVENT_TYPES = [
   "comms_result",
   "agent_error",
   "done",
+  "pre_alert",
+  "pre_alert_acked",
+  "pre_alert_cleared",
 ] as const;
 
 export type ConnState = "connecting" | "open" | "error";
@@ -32,7 +36,12 @@ export type ConnState = "connecting" | "open" | "error";
 export function useIncidentStream() {
   const [state, dispatch] = useReducer(reduce, undefined, initialState);
   const [conn, setConn] = useState<ConnState>("connecting");
+  const [preAlerts, setPreAlerts] = useState<PreAlert[]>([]);
   const esRef = useRef<EventSource | null>(null);
+
+  useEffect(() => {
+    api.preAlerts().then(setPreAlerts).catch(() => setPreAlerts([]));
+  }, []);
 
   useEffect(() => {
     const es = new EventSource("/api/stream");
@@ -44,6 +53,19 @@ export function useIncidentStream() {
     const handler = (e: MessageEvent) => {
       try {
         const parsed = JSON.parse(e.data) as StreamEvent;
+        if (parsed.type === "pre_alert") {
+          const row = parsed.payload as PreAlert;
+          setPreAlerts((prev) => {
+            const rest = prev.filter((p) => p.id !== row.id);
+            return row.acked ? rest : [row, ...rest];
+          });
+          return;
+        }
+        if (parsed.type === "pre_alert_acked" || parsed.type === "pre_alert_cleared") {
+          const id = String(parsed.payload?.id || "");
+          setPreAlerts((prev) => prev.filter((p) => p.id !== id));
+          return;
+        }
         dispatch(parsed);
       } catch {
         /* ignore malformed frame */
@@ -60,5 +82,14 @@ export function useIncidentStream() {
     };
   }, []);
 
-  return { state, conn };
+  const ackPreAlert = async (id: string) => {
+    try {
+      await api.ackPreAlert(id);
+      setPreAlerts((prev) => prev.filter((p) => p.id !== id));
+    } catch {
+      /* keep banner; operator can retry */
+    }
+  };
+
+  return { state, conn, preAlerts, ackPreAlert };
 }

@@ -1,0 +1,33 @@
+# In-cluster Alertmanager → War Room Service (ClusterIP).
+# EC2 Prometheus sends alerts here via NodePort 30903 (same pattern as scrape metrics ports).
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: aegis-warroom
+  group_by: ["alertname", "service"]
+  group_wait: 5s
+  group_interval: 30s
+  repeat_interval: 2h
+  routes:
+    - matchers:
+        - severity = warning
+      receiver: aegis-warroom
+      group_wait: 3s
+    - matchers:
+        - severity = critical
+      receiver: aegis-warroom
+      group_wait: 5s
+
+receivers:
+  - name: aegis-warroom
+    webhook_configs:
+      - url: http://aegis-warroom.aegispilot.svc.cluster.local/api/alertmanager/webhook
+        send_resolved: true
+
+inhibit_rules:
+  - source_matchers:
+      - severity = critical
+    target_matchers:
+      - severity = warning
+    equal: ["service"]

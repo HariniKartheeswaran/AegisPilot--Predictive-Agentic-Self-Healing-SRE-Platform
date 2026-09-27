@@ -1,0 +1,36 @@
+# Same SLO rules as Compose — source of truth for EC2 Prometheus (final/K8s path).
+# Copy onto the observability host (PROMETHEUS_URL host) or mount via your Prom config.
+groups:
+  - name: aegis_scrape
+    rules:
+      - alert: HighErrorRateWarning
+        expr: |
+          (
+            sum by (service) (rate(http_requests_total{code=~"5.."}[1m]))
+            /
+            clamp_min(sum by (service) (rate(http_requests_total[1m])), 0.001)
+          ) > 0.08
+        for: 20s
+        labels:
+          severity: warning
+          stage: pre
+        annotations:
+          summary: "Elevated 5xx rate on {{ $labels.service }}"
+          description: "Error rate is above 8% (pre-alert)."
+          value: "{{ $value }}"
+
+      - alert: HighErrorRate
+        expr: |
+          (
+            sum by (service) (rate(http_requests_total{code=~"5.."}[1m]))
+            /
+            clamp_min(sum by (service) (rate(http_requests_total[1m])), 0.001)
+          ) > 0.20
+        for: 30s
+        labels:
+          severity: critical
+          stage: full
+        annotations:
+          summary: "High 5xx rate on {{ $labels.service }}"
+          description: "Error rate is above 20% (full incident)."
+          value: "{{ $value }}"
