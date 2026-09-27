@@ -329,12 +329,31 @@ def prepare_live_fire(
     return {"alert": alert, "scenario": "live", "service": service, "load": load}
 
 
+def _current_error_rate(service: str) -> float:
+    """Read injected ERROR_RATE from the live Deployment (0 if healed)."""
+    try:
+        apps, _ = _load_apps()
+        ns = get_settings().k8s_namespace
+        dep = apps.read_namespaced_deployment(service, ns)
+        containers = dep.spec.template.spec.containers or []
+        raw = _env_val(containers, "ERROR_RATE", "0")
+        return float(raw)
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
 def warm_live_metrics(
     storage: StorageService,
     service: str = "checkout-svc",
     bursts: int = 24,
+    sustain_s: float = 90.0,
 ) -> dict[str, int]:
-    """Background: wait for rollout, generate Prom traffic, ingest logs."""
+    """Background: wait for rollout, then keep /api/work hot so Prom can fire.
+
+    A single short burst decays out of rate(...[1m]) before rules' ``for``
+    windows elapse — sustain load ~90s so Warning/Critical can go Pending→Firing
+    while agents run. Stops early once remediation clears ERROR_RATE.
+    """
     if service not in _SCRAPE:
         service = "checkout-svc"
     try:
@@ -347,6 +366,20 @@ def warm_live_metrics(
         time.sleep(1.0)
         load = _generate_load(service, bursts=bursts)
         n_logs = ingest_live_logs(storage, service)
+
+        deadline = time.monotonic() + max(0.0, sustain_s)
+        while time.monotonic() < deadline:
+            if _current_error_rate(service) <= 0.01:
+                log.info("live fire sustain stop — ERROR_RATE cleared on %s", service)
+                break
+            time.sleep(3.0)
+            part = _generate_load(service, bursts=12)
+            load = {
+                "ok": load["ok"] + part["ok"],
+                "err": load["err"] + part["err"],
+                "total": load["total"] + part["total"],
+            }
+
         log.info("live fire warmed service=%s load=%s logs=%d", service, load, n_logs)
         return load
     except Exception:  # noqa: BLE001

@@ -207,7 +207,7 @@ async def demo_fire(request: Request):
         suppress_am_full_for(alert.service, 300.0)
         await request.app.state.bus.publish(alert)
         asyncio.create_task(
-            asyncio.to_thread(warm_live_metrics, storage, alert.service, 24)
+            asyncio.to_thread(warm_live_metrics, storage, alert.service, 24, 90.0)
         )
         return {
             "accepted": True,
