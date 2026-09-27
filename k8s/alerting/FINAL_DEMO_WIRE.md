@@ -1,56 +1,52 @@
-# Final demo wire-up (do today, in order)
+# Final demo — backup video + live day
 
-Code is on `origin/feature/k8s` (`2ba966d`). Docker Compose changes were **not** committed.
+## Commit / deploy (do once today)
 
-## A — Jenkins: build + deploy new War Room image
+1. Code is on **your fork** `feature/k8s` (Fire speed + AM dedup fixes).
+2. Open PR → Harini `feature/k8s` → merge.
+3. Jenkins **aegisops-ci** from that branch:
+   - `DEPLOY_ENABLED` = **true**
+   - `RUN_SONAR` = false (skip for speed)
+   - Promote when prompted.
+4. Smoke (30s):
+   - http://13.207.225.219/api/health
+   - http://13.207.225.219/api/pre-alerts → JSON (not 404)
+   - http://13.207.225.219:30903/-/healthy
+   - http://3.111.113.151:9090/alerts → 2 rules (often green/inactive)
 
-Build job from branch **`feature/k8s`** with:
+## Tabs to open (video + demo day)
 
-| Param | Value |
-|-------|--------|
-| `DEPLOY_ENABLED` | **true** |
-| `RUN_SONAR` | true (optional) |
-| `K8S_COMMIT` | `2593d5588042e0af43f24987145a68ff9b83540e` |
+1. War Room — http://13.207.225.219/
+2. Prometheus Alerts — http://3.111.113.151:9090/alerts
+3. Alertmanager — http://13.207.225.219:30903/#/alerts
+4. Grafana (optional) — http://3.111.113.151:3000
+5. Slack `#…` where AegisOps posts (optional)
 
-Promote candidate when asked. After deploy, check:
+**Do not open Jenkins on camera.** It already deployed.
 
-```text
-http://13.207.225.219/api/pre-alerts
-```
+## Backup video script (~4–6 min)
 
-Must return `[]` (not 404).
+Say: *“Live fault on checkout → Prometheus detects → Alertmanager routes → War Room agents remediate.”*
 
-## B — Apply Alertmanager (machine with kubeconfig)
+1. **War Room** — click **Fire Incident once**. Spinner should clear in ~seconds (not minutes). Agents start.
+2. **Prometheus** — while errors are up, show **Pending/Firing** (red).  
+   If still green, wait ~30–60s or keep talking over Triage.
+3. **Alertmanager** — show the same alert group (`HighErrorRateWarning` / critical).
+4. **War Room** — yellow **PRE-ALERT** if present; walk agents; when **Approve** appears → click **Approve**.
+5. **Resolved** + RCA. Prom returns **Inactive/green** = healed.
+6. **Slack** — show **RESOLVED** post (not REJECTED).
 
-```bash
-kubectl apply -f k8s/alerting/alertmanager.yaml
-# or: bash k8s/alerting/apply-alertmanager.sh
-kubectl -n aegispilot get pods,svc -l app=aegis-alertmanager
-```
+**Rules while recording**
+- One Fire only. Do not spam.
+- Approve within a few minutes (timeout → Slack REJECTED).
+- Green Prom *before* Fire is healthy; green *after* Resolve is success.
 
-Open: http://13.207.225.219:30903
+## Live demo day (same flow)
 
-## C — EC2 Prometheus rules (on 3.111.113.151)
+Same tabs + same script. Worst case: play this backup video.
 
-Copy `k8s/alerting/rules.yml` + `wire-ec2-prometheus.sh` to the Prom host, then:
+## Already wired (no redo unless broken)
 
-```bash
-sudo NODE_IP=13.207.225.219 bash wire-ec2-prometheus.sh ./rules.yml
-```
-
-Open: http://3.111.113.151:9090/alerts  
-Expect: `HighErrorRateWarning` + `HighErrorRate`
-
-## D — Demo script
-
-1. http://13.207.225.219/ → **Fire** (manual agents — already proven)
-2. Or spike errors and wait ~30s → Prom firing → AM groups → War Room **Pre-alert** then full incident
-3. Grafana http://3.111.113.151:3000 — charts
-
-## Verify checklist
-
-- [ ] `/api/pre-alerts` → 200
-- [ ] AM UI `:30903` loads
-- [ ] Prom `/alerts` shows Aegis rules
-- [ ] Pre-alert banner after mild spike / webhook test
-- [ ] Critical → agents (Pub/Sub path with `BACKEND=cloud`)
+- Alertmanager on K8s `:30903`
+- EC2 Prom rules → AM
+- War Room webhook + pre-alerts

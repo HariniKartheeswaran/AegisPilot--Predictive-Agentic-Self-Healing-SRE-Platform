@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from backend.models import IncidentStatus
 from backend.services import alertmanager_ingest as ami
 
 
@@ -168,3 +169,72 @@ async def test_ack_pre_alert():
     acked = ami.ack_pre_alert(row["id"])
     assert acked and acked["acked"] is True
     assert ami.list_pre_alerts() == []
+
+
+@pytest.mark.asyncio
+async def test_process_webhook_critical_suppressed_during_fire_cooldown():
+    bus = AsyncMock()
+    hub = AsyncMock()
+    ami.suppress_am_full_for("checkout-svc", 60.0)
+    with patch("backend.services.slack.post_incident", new_callable=AsyncMock):
+        out = await ami.process_webhook(
+            {
+                "alerts": [
+                    {
+                        "status": "firing",
+                        "labels": {
+                            "alertname": "HighErrorRate",
+                            "service": "checkout-svc",
+                            "severity": "critical",
+                            "stage": "full",
+                        },
+                        "annotations": {"summary": "crit", "value": "0.35"},
+                        "fingerprint": "fp-supp",
+                    }
+                ],
+            },
+            bus=bus,
+            hub=hub,
+        )
+    assert out["incidents"] == 0
+    assert out["suppressed"] == 1
+    bus.publish.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_process_webhook_critical_skipped_when_incident_open():
+    bus = AsyncMock()
+    hub = AsyncMock()
+
+    class _Inc:
+        service = "checkout-svc"
+        status = IncidentStatus.TRIAGED
+
+    class _Store:
+        def list_incidents(self):
+            return [_Inc()]
+
+    with patch("backend.services.slack.post_incident", new_callable=AsyncMock):
+        out = await ami.process_webhook(
+            {
+                "alerts": [
+                    {
+                        "status": "firing",
+                        "labels": {
+                            "alertname": "HighErrorRate",
+                            "service": "checkout-svc",
+                            "severity": "critical",
+                            "stage": "full",
+                        },
+                        "annotations": {"summary": "crit", "value": "0.4"},
+                        "fingerprint": "fp-open",
+                    }
+                ],
+            },
+            bus=bus,
+            hub=hub,
+            storage=_Store(),
+        )
+    assert out["incidents"] == 0
+    assert out["suppressed"] == 1
+    bus.publish.assert_not_called()

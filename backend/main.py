@@ -145,6 +145,7 @@ async def alertmanager_webhook(request: Request):
         payload or {},
         bus=request.app.state.bus,
         hub=stream_hub,
+        storage=request.app.state.storage,
     )
 
 
@@ -181,21 +182,33 @@ async def ack_pre_alert_route(pre_id: str):
 async def demo_fire(request: Request):
     """Fire an incident.
 
-    Live K8s mode (REMEDIATION_MODE=kubernetes + PROMETHEUS_URL): spikes a real
-    scrape Deployment ERROR_RATE, generates /api/work load, ingests live logs —
-    no HikariCP seed fixtures.
+    Live K8s mode (REMEDIATION_MODE=kubernetes + PROMETHEUS_URL): patches a real
+    scrape Deployment ERROR_RATE and publishes immediately. Rollout + load run in
+    the background so the UI spinner does not wait  several minutes.
 
     Otherwise: rotating demo scenario (local / offline).
     """
-    from backend.services.live_fire import live_mode_enabled, prepare_live_fire
+    import asyncio
+
+    from backend.services.alertmanager_ingest import suppress_am_full_for
+    from backend.services.live_fire import (
+        live_mode_enabled,
+        prepare_live_fire,
+        warm_live_metrics,
+    )
 
     storage = request.app.state.storage
     if live_mode_enabled():
-        import asyncio
-
-        prepared = await asyncio.to_thread(prepare_live_fire, storage, "checkout-svc", 0.42)
+        prepared = await asyncio.to_thread(
+            prepare_live_fire, storage, "checkout-svc", 0.42
+        )
         alert = prepared["alert"]
+        # Prevent Prom→AM critical from opening a second pipeline for the same Fire.
+        suppress_am_full_for(alert.service, 300.0)
         await request.app.state.bus.publish(alert)
+        asyncio.create_task(
+            asyncio.to_thread(warm_live_metrics, storage, alert.service, 24)
+        )
         return {
             "accepted": True,
             "scenario": "live",
@@ -204,6 +217,7 @@ async def demo_fire(request: Request):
             "error_rate": alert.error_rate,
             "live": True,
             "load": prepared.get("load"),
+            "warming": True,
         }
 
     sc = next_scenario()

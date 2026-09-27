@@ -5,6 +5,9 @@ Maps Alertmanager v4 webhook payloads into either:
   - full alerts (severity=critical / stage=full): publish onto the event bus
 
 Pub/Sub remains the cloud hop (later); Compose uses this HTTP webhook.
+
+Dedup: while an incident is already open for a service (or Fire just ran),
+critical AM webhooks are skipped so Prom lag does not spawn duplicate runs.
 """
 from __future__ import annotations
 
@@ -13,11 +16,52 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
-from backend.models import Alert, StreamEvent, now_ms
+from backend.models import Alert, IncidentStatus, StreamEvent, now_ms
 
 log = logging.getLogger("aegisops.alertmanager")
 
 _PRE_ALERTS: dict[str, "PreAlert"] = {}
+# service → unix time until which AM "full" publishes are suppressed (Fire path)
+_SUPPRESS_FULL_UNTIL: dict[str, float] = {}
+
+_OPEN_STATUSES = frozenset(
+    {
+        IncidentStatus.DETECTED,
+        IncidentStatus.TRIAGED,
+        IncidentStatus.DIAGNOSED,
+        IncidentStatus.CORRELATED,
+        IncidentStatus.AWAITING_APPROVAL,
+        IncidentStatus.REMEDIATING,
+    }
+)
+
+
+def suppress_am_full_for(service: str, seconds: float = 300.0) -> None:
+    """After War Room Fire, ignore Prom→AM critical for a short window."""
+    if not service:
+        return
+    _SUPPRESS_FULL_UNTIL[service] = time.time() + max(0.0, seconds)
+    log.info("AM full suppress %s for %.0fs", service, seconds)
+
+
+def _full_suppressed(service: str) -> bool:
+    until = _SUPPRESS_FULL_UNTIL.get(service) or 0.0
+    return time.time() < until
+
+
+def _has_open_incident(storage: Any, service: str) -> bool:
+    if storage is None or not service:
+        return False
+    try:
+        for inc in storage.list_incidents():
+            if getattr(inc, "service", None) != service:
+                continue
+            status = getattr(inc, "status", None)
+            if status in _OPEN_STATUSES:
+                return True
+    except Exception:  # noqa: BLE001
+        log.exception("open-incident check failed")
+    return False
 
 
 @dataclass
@@ -137,15 +181,16 @@ async def process_webhook(
     *,
     bus,
     hub,
+    storage: Any = None,
 ) -> dict[str, Any]:
     """Handle one Alertmanager webhook body.
 
-    Returns counts: pre_alerts, incidents, resolved, ignored.
+    Returns counts: pre_alerts, incidents, resolved, ignored, suppressed.
     """
     from backend.services.slack import post_incident
 
     alerts = payload.get("alerts") or []
-    pre_n = incident_n = resolved_n = ignored_n = 0
+    pre_n = incident_n = resolved_n = ignored_n = suppressed_n = 0
 
     for entry in alerts:
         if not isinstance(entry, dict):
@@ -208,18 +253,28 @@ async def process_webhook(
                     ts=now_ms(),
                 )
             )
-            # Best-effort Slack — never blocks ingest.
-            try:
-                await post_incident(
-                    f"*PRE-ALERT* `{pre.service}` — {pre.summary}\n"
-                    f"Error rate: `{pre.error_rate}` · Ack required in War Room.",
-                    summary=f"[PRE-ALERT] {pre.service}: {pre.alertname} @ {pre.error_rate}",
-                )
-            except Exception:  # noqa: BLE001
-                log.exception("pre-alert Slack notify failed")
+            # Skip Slack spam when agents are already running for this service.
+            if not _has_open_incident(storage, service) and not _full_suppressed(service):
+                try:
+                    await post_incident(
+                        f"*PRE-ALERT* `{pre.service}` — {pre.summary}\n"
+                        f"Error rate: `{pre.error_rate}` · Ack required in War Room.",
+                        summary=f"[PRE-ALERT] {pre.service}: {pre.alertname} @ {pre.error_rate}",
+                    )
+                except Exception:  # noqa: BLE001
+                    log.exception("pre-alert Slack notify failed")
             continue
 
-        # Full incident path — clear overlapping pre-alerts for the service.
+        # Full incident path — dedup vs Fire / open pipeline.
+        if _full_suppressed(service) or _has_open_incident(storage, service):
+            suppressed_n += 1
+            log.info(
+                "AM full suppressed for %s (open incident or Fire cooldown)",
+                service,
+            )
+            continue
+
+        # Clear overlapping pre-alerts only when we actually escalate.
         for cleared_id in clear_pre_alerts_for_service(service):
             await hub.publish(
                 StreamEvent(
@@ -247,8 +302,10 @@ async def process_webhook(
         "incidents": incident_n,
         "resolved": resolved_n,
         "ignored": ignored_n,
+        "suppressed": suppressed_n,
     }
 
 
 def reset_pre_alerts_for_tests() -> None:
     _PRE_ALERTS.clear()
+    _SUPPRESS_FULL_UNTIL.clear()

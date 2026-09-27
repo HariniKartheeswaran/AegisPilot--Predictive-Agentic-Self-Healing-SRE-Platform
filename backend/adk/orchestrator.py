@@ -340,6 +340,15 @@ class AdkOrchestrator:
 
         if not decision.approved:
             await rc.emit("rejected", agent="Remediation", approver=decision.approver)
+            try:
+                from backend.services.live_fire import clear_live_inject, live_mode_enabled
+
+                if live_mode_enabled():
+                    import asyncio
+
+                    await asyncio.to_thread(clear_live_inject, rc.incident.service)
+            except Exception:  # noqa: BLE001
+                pass
             await rc.transition(IncidentStatus.REJECTED)
             await rc.emit("agent_end", agent="Remediation")
             return

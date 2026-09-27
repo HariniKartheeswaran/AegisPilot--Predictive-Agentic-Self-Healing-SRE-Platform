@@ -3,9 +3,8 @@
 When REMEDIATION_MODE=kubernetes and PROMETHEUS_URL are set, Fire:
   1. Records the current scrape version as the rollback target
   2. Patches ERROR_RATE + a new SERVICE_VERSION on the target Deployment
-  3. Generates /api/work load so Prometheus 5xx series move
-  4. Ingests live pod/Loki logs into storage (replacing demo noise for the window)
-  5. Returns an Alert whose error_rate matches the injected fault
+  3. Publishes the alert immediately (UI spinner must not wait on rollout/load)
+  4. Background: wait rollout, generate /api/work load, ingest live logs
 """
 from __future__ import annotations
 
@@ -66,44 +65,75 @@ def _patch_env(apps, ns: str, deploy: str, updates: dict[str, str]) -> None:
     _patch_container_env(apps, ns, deploy, updates)
 
 
-def _wait_ready(apps, ns: str, deploy: str, timeout_s: float = 90.0) -> None:
+def _wait_ready(apps, ns: str, deploy: str, timeout_s: float = 45.0) -> None:
     from backend.tools.remediation import _wait_rollout
 
     _wait_rollout(apps, ns, deploy, timeout_s=timeout_s)
 
 
-def _generate_load(service: str, bursts: int = 80) -> dict[str, int]:
-    """Hit in-cluster Service /api/work so Prom sees 5xx under ERROR_RATE."""
+def clear_live_inject(service: str) -> None:
+    """Drop injected ERROR_RATE so Prom/AM stop storming after reject/timeout."""
+    if service not in _SCRAPE:
+        return
+    try:
+        apps, _ = _load_apps()
+        ns = get_settings().k8s_namespace
+        _patch_env(
+            apps,
+            ns,
+            service,
+            {"ERROR_RATE": "0.0", "FAIL_READY": "false", "LATENCY_MS": "25"},
+        )
+        log.info("cleared live inject on %s", service)
+    except Exception:  # noqa: BLE001
+        log.exception("clear_live_inject failed for %s", service)
+
+
+def _work_urls(service: str) -> list[str]:
+    ns = get_settings().k8s_namespace
     urls = [
-        f"http://{service}.{get_settings().k8s_namespace}.svc.cluster.local:8080/api/work",
+        f"http://{service}.{ns}.svc.cluster.local:8080/api/work",
         f"http://{service}:8080/api/work",
     ]
-    # NodePort fallback (warroom may resolve DNS differently)
     port = _NODEPORTS.get(service)
     if port:
         urls.append(f"http://13.207.225.219:{port}/api/work")
+    return urls
+
+
+def _pick_work_url(service: str) -> str | None:
+    """Probe once; reuse the first reachable URL (avoids 3× timeout per burst)."""
+    with httpx.Client(timeout=0.6) as client:
+        for url in _work_urls(service):
+            try:
+                client.get(url)
+                return url
+            except Exception:
+                continue
+    return None
+
+
+def _generate_load(service: str, bursts: int = 24) -> dict[str, int]:
+    """Hit /api/work so Prom sees 5xx under ERROR_RATE (fast, single URL)."""
+    url = _pick_work_url(service)
+    if not url:
+        return {"ok": 0, "err": 0, "total": 0}
 
     ok = err = 0
-    with httpx.Client(timeout=3.0) as client:
+    with httpx.Client(timeout=0.8) as client:
         for _ in range(bursts):
-            hit = False
-            for url in urls:
-                try:
-                    r = client.get(url)
-                    if r.status_code >= 500:
-                        err += 1
-                    else:
-                        ok += 1
-                    hit = True
-                    break
-                except Exception:
-                    continue
-            if not hit:
+            try:
+                r = client.get(url)
+                if r.status_code >= 500:
+                    err += 1
+                else:
+                    ok += 1
+            except Exception:
                 break
     return {"ok": ok, "err": err, "total": ok + err}
 
 
-def fetch_live_log_lines(service: str, limit: int = 80) -> list[LogLine]:
+def fetch_live_log_lines(service: str, limit: int = 40) -> list[LogLine]:
     """Prefer Loki, then Kubernetes pod logs."""
     lines = _logs_from_loki(service, limit=limit)
     if lines:
@@ -111,7 +141,7 @@ def fetch_live_log_lines(service: str, limit: int = 80) -> list[LogLine]:
     return _logs_from_k8s(service, limit=limit)
 
 
-def _logs_from_loki(service: str, limit: int = 80) -> list[LogLine]:
+def _logs_from_loki(service: str, limit: int = 40) -> list[LogLine]:
     s = get_settings()
     base = (
         getattr(s, "loki_url", None)
@@ -119,7 +149,6 @@ def _logs_from_loki(service: str, limit: int = 80) -> list[LogLine]:
         or ""
     ).strip()
     if not base and (s.grafana_url or "").strip():
-        # Same observability host, Loki on 3100
         host = s.grafana_url.rstrip("/").rsplit(":", 1)[0]
         base = f"{host}:3100"
     if not base:
@@ -129,7 +158,7 @@ def _logs_from_loki(service: str, limit: int = 80) -> list[LogLine]:
     query = '{app="%s"}' % service
     url = f"{base.rstrip('/')}/loki/api/v1/query_range"
     try:
-        with httpx.Client(timeout=8.0) as client:
+        with httpx.Client(timeout=4.0) as client:
             r = client.get(
                 url,
                 params={
@@ -169,7 +198,7 @@ def _logs_from_loki(service: str, limit: int = 80) -> list[LogLine]:
     return out[-limit:]
 
 
-def _logs_from_k8s(service: str, limit: int = 80) -> list[LogLine]:
+def _logs_from_k8s(service: str, limit: int = 40) -> list[LogLine]:
     try:
         _, core = _load_apps()
         ns = get_settings().k8s_namespace
@@ -186,7 +215,6 @@ def _logs_from_k8s(service: str, limit: int = 80) -> list[LogLine]:
     for i, line in enumerate((raw or "").splitlines()):
         if not line.strip():
             continue
-        # "2026-09-24T10:00:00.000000000Z message..."
         msg = line
         ts_ms = now_ms() - (limit - i) * 1000
         m = re.match(r"^(\S+)\s+(.*)$", line)
@@ -221,8 +249,15 @@ def prepare_live_fire(
     storage: StorageService,
     service: str = "checkout-svc",
     error_rate: float = 0.42,
+    *,
+    wait_ready: bool = False,
+    generate_load: bool = False,
 ) -> dict[str, Any]:
-    """Mutate the live scrape Deployment and return alert payload fields."""
+    """Patch the scrape Deployment and return an alert immediately.
+
+    By default does **not** block on rollout/load — callers should schedule
+    ``warm_live_metrics`` in the background so `/api/demo/fire` returns fast.
+    """
     if service not in _SCRAPE:
         service = "checkout-svc"
 
@@ -245,20 +280,15 @@ def prepare_live_fire(
             "LATENCY_MS": "40",
         },
     )
-    _wait_ready(apps, ns, service, timeout_s=60.0)
 
-    # Brief scrape settle, then generate 5xx traffic.
-    time.sleep(2.0)
-    load = _generate_load(service, bursts=60)
-    time.sleep(1.0)
-    load2 = _generate_load(service, bursts=30)
-    load = {
-        "ok": load["ok"] + load2["ok"],
-        "err": load["err"] + load2["err"],
-        "total": load["total"] + load2["total"],
-    }
-
-    n_logs = ingest_live_logs(storage, service)
+    load: dict[str, int] = {"ok": 0, "err": 0, "total": 0}
+    n_logs = 0
+    if wait_ready:
+        _wait_ready(apps, ns, service, timeout_s=45.0)
+    if generate_load:
+        time.sleep(1.0)
+        load = _generate_load(service, bursts=24)
+        n_logs = ingest_live_logs(storage, service)
 
     t = now_ms()
     storage.add_deploy(
@@ -293,10 +323,35 @@ def prepare_live_fire(
         },
     )
     log.info(
-        "live fire ready service=%s bad=%s good=%s load=%s logs=%d",
-        service, bad_ver, good_ver, load, n_logs,
+        "live fire patched service=%s bad=%s good=%s load=%s logs=%d wait=%s",
+        service, bad_ver, good_ver, load, n_logs, wait_ready,
     )
     return {"alert": alert, "scenario": "live", "service": service, "load": load}
+
+
+def warm_live_metrics(
+    storage: StorageService,
+    service: str = "checkout-svc",
+    bursts: int = 24,
+) -> dict[str, int]:
+    """Background: wait for rollout, generate Prom traffic, ingest logs."""
+    if service not in _SCRAPE:
+        service = "checkout-svc"
+    try:
+        apps, _ = _load_apps()
+        ns = get_settings().k8s_namespace
+        try:
+            _wait_ready(apps, ns, service, timeout_s=45.0)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("live fire rollout wait: %s (continuing load)", exc)
+        time.sleep(1.0)
+        load = _generate_load(service, bursts=bursts)
+        n_logs = ingest_live_logs(storage, service)
+        log.info("live fire warmed service=%s load=%s logs=%d", service, load, n_logs)
+        return load
+    except Exception:  # noqa: BLE001
+        log.exception("warm_live_metrics failed for %s", service)
+        return {"ok": 0, "err": 0, "total": 0}
 
 
 def build_live_alert(storage: StorageService) -> Alert:
