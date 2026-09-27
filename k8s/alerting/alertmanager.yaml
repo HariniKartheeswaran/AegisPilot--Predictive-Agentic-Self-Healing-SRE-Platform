@@ -1,0 +1,118 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aegis-alertmanager-config
+  namespace: aegispilot
+  labels:
+    app: aegis-alertmanager
+    team: aegis
+    tier: alerting
+data:
+  alertmanager.yml: |
+    global:
+      resolve_timeout: 5m
+    route:
+      receiver: aegis-warroom
+      group_by: ["alertname", "service"]
+      group_wait: 5s
+      group_interval: 30s
+      repeat_interval: 2h
+      routes:
+        - matchers:
+            - severity = warning
+          receiver: aegis-warroom
+          group_wait: 3s
+        - matchers:
+            - severity = critical
+          receiver: aegis-warroom
+          group_wait: 5s
+    receivers:
+      - name: aegis-warroom
+        webhook_configs:
+          - url: http://aegis-warroom.aegispilot.svc.cluster.local/api/alertmanager/webhook
+            send_resolved: true
+    inhibit_rules:
+      - source_matchers:
+          - severity = critical
+        target_matchers:
+          - severity = warning
+        equal: ["service"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aegis-alertmanager
+  namespace: aegispilot
+  labels:
+    app: aegis-alertmanager
+    team: aegis
+    tier: alerting
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aegis-alertmanager
+  template:
+    metadata:
+      labels:
+        app: aegis-alertmanager
+        team: aegis
+        tier: alerting
+    spec:
+      containers:
+        - name: alertmanager
+          image: prom/alertmanager:v0.27.0
+          args:
+            - --config.file=/etc/alertmanager/alertmanager.yml
+            - --storage.path=/alertmanager
+            - --cluster.listen-address=
+          ports:
+            - name: http
+              containerPort: 9093
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alertmanager
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+      volumes:
+        - name: config
+          configMap:
+            name: aegis-alertmanager-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aegis-alertmanager
+  namespace: aegispilot
+  labels:
+    app: aegis-alertmanager
+    team: aegis
+    tier: alerting
+spec:
+  type: NodePort
+  selector:
+    app: aegis-alertmanager
+  ports:
+    - name: http
+      port: 9093
+      targetPort: 9093
+      nodePort: 30903
+      protocol: TCP

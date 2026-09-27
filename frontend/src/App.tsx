@@ -7,13 +7,14 @@ import ApprovalModal from "./components/ApprovalModal";
 import CustomIncidentModal from "./components/CustomIncidentModal";
 import Header from "./components/Header";
 import IdleHero from "./components/IdleHero";
+import PreAlertBanner from "./components/PreAlertBanner";
 import ReasoningStream from "./components/ReasoningStream";
 import RightPanel from "./components/RightPanel";
 import RegistryDrawer from "./components/RegistryDrawer";
 import { useIncidentStream } from "./useIncidentStream";
 
 export default function App() {
-  const { state, conn } = useIncidentStream();
+  const { state, conn, preAlerts, ackPreAlert } = useIncidentStream();
   const [health, setHealth] = useState<Health | null>(null);
   const [registryOpen, setRegistryOpen] = useState(false);
   const [customOpen, setCustomOpen] = useState(false);
@@ -66,6 +67,8 @@ export default function App() {
         onOpenCustom={() => setCustomOpen(true)}
         onOpenRegistry={() => setRegistryOpen(true)}
       />
+
+      <PreAlertBanner alerts={preAlerts} onAck={ackPreAlert} />
 
       {!hasIncident ? (
         // IDLE — a single clear call-to-action instead of a wall of empty panels.

@@ -22,6 +22,20 @@ export interface Alert {
   metadata?: Record<string, unknown>;
 }
 
+export interface PreAlert {
+  id: string;
+  fingerprint: string;
+  alertname: string;
+  service: string;
+  severity: string;
+  summary: string;
+  error_rate: string;
+  status: string;
+  acked: boolean;
+  started_at: number;
+  updated_at: number;
+}
+
 export interface RemediationPlan {
   action: string;
   target: string;

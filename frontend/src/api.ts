@@ -1,4 +1,4 @@
-import type { AuditStep, Incident, RegistryEntry } from "./types";
+import type { AuditStep, Incident, PreAlert, RegistryEntry } from "./types";
 
 // All calls hit relative /api — Vite proxies to :8080 in dev, same-origin in the
 // single-container Cloud Run build. Small wrapper so callers get typed JSON or a
@@ -65,5 +65,12 @@ export const api = {
   fireCustom: (form: FormData) =>
     fetch("/api/incidents/custom", { method: "POST", body: form }).then(
       j<{ accepted: boolean; service: string; logs_ingested: number; vision_image: boolean }>
+    ),
+
+  preAlerts: () => fetch("/api/pre-alerts").then(j<PreAlert[]>),
+
+  ackPreAlert: (id: string) =>
+    fetch(`/api/pre-alerts/${id}/ack`, { method: "POST" }).then(
+      j<{ acked: boolean; pre_alert: PreAlert }>
     ),
 };

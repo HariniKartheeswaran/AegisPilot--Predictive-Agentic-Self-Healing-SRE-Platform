@@ -130,6 +130,53 @@ async def post_alert(alert: Alert, request: Request):
     return {"accepted": True, "service": alert.service}
 
 
+@app.post("/api/alertmanager/webhook")
+async def alertmanager_webhook(request: Request):
+    """Prometheus Alertmanager → War Room (K8s / Compose ingest).
+
+    Warning / stage=pre → mandatory pre-alert (UI + Slack), no incident yet.
+    Critical / stage=full → publish onto the event bus (full agent run).
+    """
+    from backend.services.alertmanager_ingest import process_webhook
+    from backend.services.stream import hub as stream_hub
+
+    payload = await request.json()
+    return await process_webhook(
+        payload or {},
+        bus=request.app.state.bus,
+        hub=stream_hub,
+    )
+
+
+@app.get("/api/pre-alerts")
+async def get_pre_alerts():
+    """Active mandatory pre-alerts (unacked firing warnings)."""
+    from backend.services.alertmanager_ingest import list_pre_alerts
+
+    return list_pre_alerts(include_acked=False)
+
+
+@app.post("/api/pre-alerts/{pre_id}/ack")
+async def ack_pre_alert_route(pre_id: str):
+    """Operator acknowledged the mandatory pre-alert banner."""
+    from backend.models import StreamEvent, now_ms
+    from backend.services.alertmanager_ingest import ack_pre_alert
+    from backend.services.stream import hub as stream_hub
+
+    row = ack_pre_alert(pre_id)
+    if not row:
+        raise HTTPException(404, "pre-alert not found")
+    await stream_hub.publish(
+        StreamEvent(
+            type="pre_alert_acked",
+            incident_id="",
+            payload=row,
+            ts=now_ms(),
+        )
+    )
+    return {"acked": True, "pre_alert": row}
+
+
 @app.post("/api/demo/fire")
 async def demo_fire(request: Request):
     """Fire an incident.
