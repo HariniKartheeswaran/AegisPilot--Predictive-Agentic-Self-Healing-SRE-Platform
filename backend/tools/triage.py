@@ -49,25 +49,24 @@ def parse_error_rate(error_rate: Optional[str]) -> float:
     return float(m.group(1)) if m else 0.0
 
 
+# (min error_rate_pct, severity) per tier — first match wins.
+_SEV_THRESHOLDS: dict[int, tuple[tuple[float, str], ...]] = {
+    0: ((25, "SEV1"), (8, "SEV2"), (2, "SEV3")),
+    1: ((40, "SEV1"), (15, "SEV2"), (4, "SEV3")),
+}
+_SEV_THRESHOLDS_LEAF: tuple[tuple[float, str], ...] = ((60, "SEV2"), (20, "SEV3"))
+
+
 def classify_severity(error_rate_pct: float, tier: int) -> str:
     """SEV mapping grounded in error rate + how central the service is.
 
     Tier-0 (checkout/payments) at 40% errors is a company-down SEV1. The same
     rate on a tier-2 leaf is a SEV3. This is the real rubric, not a guess.
     """
-    if tier == 0:
-        if error_rate_pct >= 25: return "SEV1"
-        if error_rate_pct >= 8:  return "SEV2"
-        if error_rate_pct >= 2:  return "SEV3"
-        return "SEV4"
-    if tier == 1:
-        if error_rate_pct >= 40: return "SEV1"
-        if error_rate_pct >= 15: return "SEV2"
-        if error_rate_pct >= 4:  return "SEV3"
-        return "SEV4"
-    # tier 2+
-    if error_rate_pct >= 60: return "SEV2"
-    if error_rate_pct >= 20: return "SEV3"
+    thresholds = _SEV_THRESHOLDS.get(tier, _SEV_THRESHOLDS_LEAF)
+    for minimum, sev in thresholds:
+        if error_rate_pct >= minimum:
+            return sev
     return "SEV4"
 
 

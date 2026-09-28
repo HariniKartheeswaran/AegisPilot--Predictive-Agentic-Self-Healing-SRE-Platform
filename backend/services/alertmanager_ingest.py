@@ -176,6 +176,86 @@ def _pre_id(fingerprint: str, service: str) -> str:
     return f"pre_{fp}"
 
 
+async def _handle_resolved_pre(hub, fingerprint: str, service: str) -> None:
+    pid = _pre_id(fingerprint, service)
+    existing = _PRE_ALERTS.pop(pid, None)
+    if not existing:
+        return
+    existing.status = "resolved"
+    await hub.publish(
+        StreamEvent(
+            type="pre_alert_cleared",
+            incident_id="",
+            payload=existing.as_dict(),
+            ts=now_ms(),
+        )
+    )
+
+
+async def _handle_pre_alert(hub, storage, labels, entry, service: str, fingerprint: str) -> None:
+    from backend.services.slack import post_incident
+
+    annotations = entry.get("annotations") or {}
+    pid = _pre_id(fingerprint, service)
+    pre = PreAlert(
+        id=pid,
+        fingerprint=fingerprint or pid,
+        alertname=str(labels.get("alertname") or "HighErrorRateWarning"),
+        service=service,
+        severity=str(labels.get("severity") or "warning"),
+        summary=str(
+            annotations.get("summary")
+            or annotations.get("description")
+            or f"Pre-alert on {service}"
+        ),
+        error_rate=_pct_from_value(
+            annotations.get("error_rate") or annotations.get("value")
+        ),
+        status="firing",
+        acked=_PRE_ALERTS[pid].acked if pid in _PRE_ALERTS else False,
+        started_at=_PRE_ALERTS[pid].started_at if pid in _PRE_ALERTS else now_ms(),
+        updated_at=now_ms(),
+    )
+    _PRE_ALERTS[pid] = pre
+    await hub.publish(
+        StreamEvent(
+            type="pre_alert",
+            incident_id="",
+            payload=pre.as_dict(),
+            ts=now_ms(),
+        )
+    )
+    if _has_open_incident(storage, service) or _full_suppressed(service):
+        return
+    try:
+        await post_incident(
+            f"*PRE-ALERT* `{pre.service}` — {pre.summary}\n"
+            f"Error rate: `{pre.error_rate}` · Ack required in War Room.",
+            summary=f"[PRE-ALERT] {pre.service}: {pre.alertname} @ {pre.error_rate}",
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("pre-alert Slack notify failed")
+
+
+async def _escalate_full_alert(bus, hub, entry, service: str) -> None:
+    for cleared_id in clear_pre_alerts_for_service(service):
+        await hub.publish(
+            StreamEvent(
+                type="pre_alert_cleared",
+                incident_id="",
+                payload={"id": cleared_id, "service": service, "reason": "escalated"},
+                ts=now_ms(),
+            )
+        )
+    alert = alert_from_am(entry)
+    await bus.publish(alert)
+    log.info(
+        "Alertmanager → bus (%s): %s on %s (%s)",
+        type(bus).__name__,
+        alert.alert, alert.service, alert.error_rate,
+    )
+
+
 async def process_webhook(
     payload: dict[str, Any],
     *,
@@ -187,8 +267,6 @@ async def process_webhook(
 
     Returns counts: pre_alerts, incidents, resolved, ignored, suppressed.
     """
-    from backend.services.slack import post_incident
-
     alerts = payload.get("alerts") or []
     pre_n = incident_n = resolved_n = ignored_n = suppressed_n = 0
 
@@ -207,65 +285,14 @@ async def process_webhook(
         if status == "resolved":
             resolved_n += 1
             if is_pre:
-                pid = _pre_id(fingerprint, service)
-                existing = _PRE_ALERTS.pop(pid, None)
-                if existing:
-                    existing.status = "resolved"
-                    await hub.publish(
-                        StreamEvent(
-                            type="pre_alert_cleared",
-                            incident_id="",
-                            payload=existing.as_dict(),
-                            ts=now_ms(),
-                        )
-                    )
+                await _handle_resolved_pre(hub, fingerprint, service)
             continue
 
         if is_pre:
-            annotations = entry.get("annotations") or {}
-            pid = _pre_id(fingerprint, service)
-            pre = PreAlert(
-                id=pid,
-                fingerprint=fingerprint or pid,
-                alertname=str(labels.get("alertname") or "HighErrorRateWarning"),
-                service=service,
-                severity=str(labels.get("severity") or "warning"),
-                summary=str(
-                    annotations.get("summary")
-                    or annotations.get("description")
-                    or f"Pre-alert on {service}"
-                ),
-                error_rate=_pct_from_value(
-                    annotations.get("error_rate") or annotations.get("value")
-                ),
-                status="firing",
-                acked=_PRE_ALERTS[pid].acked if pid in _PRE_ALERTS else False,
-                started_at=_PRE_ALERTS[pid].started_at if pid in _PRE_ALERTS else now_ms(),
-                updated_at=now_ms(),
-            )
-            _PRE_ALERTS[pid] = pre
+            await _handle_pre_alert(hub, storage, labels, entry, service, fingerprint)
             pre_n += 1
-            await hub.publish(
-                StreamEvent(
-                    type="pre_alert",
-                    incident_id="",
-                    payload=pre.as_dict(),
-                    ts=now_ms(),
-                )
-            )
-            # Skip Slack spam when agents are already running for this service.
-            if not _has_open_incident(storage, service) and not _full_suppressed(service):
-                try:
-                    await post_incident(
-                        f"*PRE-ALERT* `{pre.service}` — {pre.summary}\n"
-                        f"Error rate: `{pre.error_rate}` · Ack required in War Room.",
-                        summary=f"[PRE-ALERT] {pre.service}: {pre.alertname} @ {pre.error_rate}",
-                    )
-                except Exception:  # noqa: BLE001
-                    log.exception("pre-alert Slack notify failed")
             continue
 
-        # Full incident path — dedup vs Fire / open pipeline.
         if _full_suppressed(service) or _has_open_incident(storage, service):
             suppressed_n += 1
             log.info(
@@ -274,27 +301,8 @@ async def process_webhook(
             )
             continue
 
-        # Clear overlapping pre-alerts only when we actually escalate.
-        for cleared_id in clear_pre_alerts_for_service(service):
-            await hub.publish(
-                StreamEvent(
-                    type="pre_alert_cleared",
-                    incident_id="",
-                    payload={"id": cleared_id, "service": service, "reason": "escalated"},
-                    ts=now_ms(),
-                )
-            )
-
-        alert = alert_from_am(entry)
-        # K8s: BACKEND=cloud → PubSubBus.publish → topic incident-alerts
-        # (same path as POST /api/alerts). Local/Compose uses InProcessBus.
-        await bus.publish(alert)
+        await _escalate_full_alert(bus, hub, entry, service)
         incident_n += 1
-        log.info(
-            "Alertmanager → bus (%s): %s on %s (%s)",
-            type(bus).__name__,
-            alert.alert, alert.service, alert.error_rate,
-        )
 
     return {
         "accepted": True,

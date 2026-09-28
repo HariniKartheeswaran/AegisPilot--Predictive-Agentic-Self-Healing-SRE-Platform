@@ -22,6 +22,8 @@ from backend.models import RemediationPlan
 
 log = logging.getLogger("aegisops.remediation")
 
+_VERIFY_ROLLOUT = "Verify rollout"
+
 # The reversible action catalog with intrinsic risk. `rollback` is the standard
 # fix for a bad-deploy regression and is fully reversible.
 ACTION_CATALOG: dict[str, dict] = {
@@ -260,7 +262,7 @@ async def _execute_kubernetes(plan: RemediationPlan, service: str) -> ExecResult
             )
             add("Apply known-good config", True, detail)
             ready = await asyncio.to_thread(_wait_rollout, apps, ns, deploy)
-            add("Verify rollout", True, ready)
+            add(_VERIFY_ROLLOUT, True, ready)
 
         elif plan.action == "scale_out":
             dep = await asyncio.to_thread(apps.read_namespaced_deployment, deploy, ns)
@@ -269,7 +271,7 @@ async def _execute_kubernetes(plan: RemediationPlan, service: str) -> ExecResult
             detail = await asyncio.to_thread(_scale, apps, ns, deploy, desired)
             add("Scale out", True, detail)
             ready = await asyncio.to_thread(_wait_rollout, apps, ns, deploy)
-            add("Verify rollout", True, ready)
+            add(_VERIFY_ROLLOUT, True, ready)
 
         elif plan.action == "restart":
             # Clear injected failure then restart so metrics recover.
@@ -280,7 +282,7 @@ async def _execute_kubernetes(plan: RemediationPlan, service: str) -> ExecResult
             detail = await asyncio.to_thread(_rollout_restart, apps, ns, deploy)
             add("Rolling restart", True, detail)
             ready = await asyncio.to_thread(_wait_rollout, apps, ns, deploy)
-            add("Verify rollout", True, ready)
+            add(_VERIFY_ROLLOUT, True, ready)
 
         elif plan.action == "flag_off":
             detail = await asyncio.to_thread(
@@ -289,7 +291,7 @@ async def _execute_kubernetes(plan: RemediationPlan, service: str) -> ExecResult
             )
             add("Disable failure flags", True, detail)
             ready = await asyncio.to_thread(_wait_rollout, apps, ns, deploy)
-            add("Verify rollout", True, ready)
+            add(_VERIFY_ROLLOUT, True, ready)
 
         else:
             add(f"Execute {plan.action}", False, f"unsupported action {plan.action}")

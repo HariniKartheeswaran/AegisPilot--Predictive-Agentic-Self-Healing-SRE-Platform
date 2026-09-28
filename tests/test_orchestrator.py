@@ -31,7 +31,13 @@ def make_deps():
     )
 
 @pytest.mark.asyncio
-async def test_handle_alert_runs_full_incident_lifecycle():
+async def test_handle_alert_runs_full_incident_lifecycle(monkeypatch):
+    monkeypatch.delenv("PROMETHEUS_URL", raising=False)
+    monkeypatch.setenv("REMEDIATION_MODE", "simulate")
+    from backend.config import get_settings
+
+    get_settings.cache_clear()
+
     deps = make_deps()
     orchestrator = Orchestrator(deps)
 
@@ -63,7 +69,9 @@ async def test_handle_alert_runs_full_incident_lifecycle():
     orchestrator.comms.run = comms
 
     with patch("backend.seed.seed_data.refresh_demo_timeline") as refresh, \
-         patch("backend.tools.memory.learn_incident") as learn:
+         patch("backend.tools.memory.learn_incident") as learn, \
+         patch("backend.services.live_snapshot.ensure_alert_snapshot", side_effect=lambda a: a), \
+         patch("backend.services.live_fire.live_mode_enabled", return_value=False):
 
         incident = await orchestrator.handle_alert(make_alert())
 
@@ -82,6 +90,7 @@ async def test_handle_alert_runs_full_incident_lifecycle():
     assert incident.status != IncidentStatus.FAILED
     assert deps.storage.save_incident.called
     learn.assert_called_once_with(deps.storage, incident)
+    get_settings.cache_clear()
 
 
 @pytest.mark.asyncio

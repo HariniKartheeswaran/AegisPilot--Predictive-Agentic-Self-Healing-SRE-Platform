@@ -73,6 +73,19 @@ def test_pii_scrubber():
     assert "[REDACTED_IP]" in res.text
     assert "ghp_1234567890abcdef" not in res.text
     assert "[REDACTED_TOKEN]" in res.text
+    assert "4111-2222-3333-4444" not in res.text
+    assert "[REDACTED_CARD]" in res.text
+
+
+def test_pii_scrubber_jwt_and_spaced_card():
+    raw = (
+        "jwt eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.aaaaaaaaaa.bbbbbb "
+        "card 4111 2222 3333 4444"
+    )
+    res = scrub_pii(raw)
+    assert "[REDACTED_JWT]" in res.text
+    assert "[REDACTED_CARD]" in res.text
+    assert "4111 2222 3333 4444" not in res.text
 
 
 def test_pii_scrubber_clean_text():
