@@ -412,6 +412,31 @@ async def rca(incident_id: str, request: Request):
     return {"rca": inc.rca_doc or "", "findings": inc.findings.get("comms", {})}
 
 
+def _b64_image_response(b64: str, snap: str | Path | None):
+    import base64
+
+    from fastapi.responses import Response
+
+    return Response(
+        content=base64.b64decode(b64),
+        media_type=_media_type_for_path(snap or ""),
+    )
+
+
+def _disk_snapshot_response(snap: str):
+    p = Path(snap)
+    if not p.is_absolute():
+        p = SEED_DIR.parent.parent / p
+    if not p.exists():
+        return None
+    return FileResponse(p, media_type=_media_type_for_path(p))
+
+
+def _prefer_live_b64(meta: dict, snap, seed_path: bool) -> bool:
+    source = meta.get("snapshot_source")
+    return source in ("prometheus", "grafana-render") or seed_path or not snap
+
+
 @app.get("/api/incidents/{incident_id}/grafana")
 async def grafana(incident_id: str, request: Request):
     """Serve the exact Grafana image THIS incident's vision agent analyzed.
@@ -419,8 +444,6 @@ async def grafana(incident_id: str, request: Request):
     Prefers the on-disk path; falls back to base64 stored on the alert metadata
     so a pod recycle does not blank the Diagnosis panel.
     """
-    from fastapi.responses import Response
-
     inc = request.app.state.storage.get_incident(incident_id)
     alert = getattr(inc, "alert", None) if inc else None
     meta = (getattr(alert, "metadata", None) or {}) if alert else {}
@@ -429,30 +452,17 @@ async def grafana(incident_id: str, request: Request):
     if not (alert and (snap or b64)):
         raise HTTPException(404, "no snapshot for this incident")
 
-    # Prefer live base64 over on-disk seed PNGs (demo images ship in the image).
     seed_path = bool(snap) and ("backend/seed" in str(snap).replace("\\", "/"))
-    if b64 and (meta.get("snapshot_source") in ("prometheus", "grafana-render") or seed_path or not snap):
-        import base64
+    if b64 and _prefer_live_b64(meta, snap, seed_path):
+        return _b64_image_response(b64, snap)
 
-        return Response(
-            content=base64.b64decode(b64),
-            media_type=_media_type_for_path(snap or ""),
-        )
-
-    if snap:
-        p = Path(snap)
-        if not p.is_absolute():
-            p = SEED_DIR.parent.parent / p
-        if p.exists() and (not seed_path or not b64):
-            return FileResponse(p, media_type=_media_type_for_path(p))
+    if snap and (not seed_path or not b64):
+        file_resp = _disk_snapshot_response(str(snap))
+        if file_resp is not None:
+            return file_resp
 
     if b64:
-        import base64
-
-        return Response(
-            content=base64.b64decode(b64),
-            media_type=_media_type_for_path(snap or ""),
-        )
+        return _b64_image_response(b64, snap)
 
     raise HTTPException(404, "snapshot not available")
 

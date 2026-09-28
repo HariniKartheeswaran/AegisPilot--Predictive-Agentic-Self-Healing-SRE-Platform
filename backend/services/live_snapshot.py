@@ -315,30 +315,36 @@ def _attach_explore_only(alert, grafana_url: str) -> Any:
     return alert
 
 
+def _apply_captured_snapshot(alert, captured: dict[str, Any], seed: Any) -> Any:
+    alert.grafana_snapshot = captured["grafana_snapshot"]
+    meta = dict(alert.metadata or {})
+    if captured.get("grafana_explore_url"):
+        meta["grafana_explore_url"] = captured["grafana_explore_url"]
+    if captured.get("grafana_snapshot_b64"):
+        meta["grafana_snapshot_b64"] = captured["grafana_snapshot_b64"]
+    meta["snapshot_source"] = captured.get("source", "prometheus")
+    if _is_seed_snapshot_path(seed):
+        meta["seed_snapshot_replaced"] = str(seed)
+    alert.metadata = meta
+    return alert
+
+
 def ensure_alert_snapshot(alert) -> Any:
     """Attach a live Prom/Grafana PNG when Prometheus is configured."""
     s = get_settings()
     seed = getattr(alert, "grafana_snapshot", None)
     grafana = (s.grafana_url or "").strip()
+    prom = (s.prometheus_url or "").strip()
 
-    if (s.prometheus_url or "").strip():
-        captured = capture_live_snapshot(alert.service)
-        if captured:
-            alert.grafana_snapshot = captured["grafana_snapshot"]
-            meta = dict(alert.metadata or {})
-            if captured.get("grafana_explore_url"):
-                meta["grafana_explore_url"] = captured["grafana_explore_url"]
-            if captured.get("grafana_snapshot_b64"):
-                meta["grafana_snapshot_b64"] = captured["grafana_snapshot_b64"]
-            meta["snapshot_source"] = captured.get("source", "prometheus")
-            if _is_seed_snapshot_path(seed):
-                meta["seed_snapshot_replaced"] = str(seed)
-            alert.metadata = meta
-            return alert
-        if _is_seed_snapshot_path(seed):
-            alert.grafana_snapshot = None
-        return _attach_explore_only(alert, grafana)
+    if not prom:
+        if seed or grafana:
+            return _attach_explore_only(alert, grafana)
+        return alert
 
-    if seed or grafana:
-        return _attach_explore_only(alert, grafana)
-    return alert
+    captured = capture_live_snapshot(alert.service)
+    if captured:
+        return _apply_captured_snapshot(alert, captured, seed)
+
+    if _is_seed_snapshot_path(seed):
+        alert.grafana_snapshot = None
+    return _attach_explore_only(alert, grafana)
