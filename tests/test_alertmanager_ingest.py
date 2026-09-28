@@ -52,6 +52,7 @@ def test_alert_from_am_maps_labels():
 
 @pytest.mark.asyncio
 async def test_process_webhook_pre_alert_only():
+    """Fire-only demo: Prom warning pre-alerts are ignored (no banner / bus)."""
     bus = AsyncMock()
     hub = AsyncMock()
     with patch("backend.services.slack.post_incident", new_callable=AsyncMock) as slack:
@@ -79,14 +80,12 @@ async def test_process_webhook_pre_alert_only():
             bus=bus,
             hub=hub,
         )
-    assert out["pre_alerts"] == 1
+    assert out["ignored"] == 1
+    assert out["pre_alerts"] == 0
     assert out["incidents"] == 0
     bus.publish.assert_not_called()
-    hub.publish.assert_called()
-    rows = ami.list_pre_alerts()
-    assert len(rows) == 1
-    assert rows[0]["service"] == "checkout-svc"
-    assert rows[0]["error_rate"] == "12.0%"
+    hub.publish.assert_not_called()
+    assert ami.list_pre_alerts() == []
 
 
 @pytest.mark.asyncio
@@ -94,6 +93,7 @@ async def test_process_webhook_critical_publishes_and_clears_pre():
     bus = AsyncMock()
     hub = AsyncMock()
     with patch("backend.services.slack.post_incident", new_callable=AsyncMock):
+        # Pre-alerts are ignored in Fire-only mode; critical still opens an incident.
         await ami.process_webhook(
             {
                 "alerts": [
@@ -113,7 +113,7 @@ async def test_process_webhook_critical_publishes_and_clears_pre():
             bus=bus,
             hub=hub,
         )
-        assert ami.list_pre_alerts()
+        assert ami.list_pre_alerts() == []
 
         out = await ami.process_webhook(
             {
@@ -144,31 +144,25 @@ async def test_process_webhook_critical_publishes_and_clears_pre():
 
 @pytest.mark.asyncio
 async def test_ack_pre_alert():
-    bus = AsyncMock()
+    """Ack helper still works if a pre-alert row exists (API compatibility)."""
     hub = AsyncMock()
-    with patch("backend.services.slack.post_incident", new_callable=AsyncMock):
-        await ami.process_webhook(
-            {
-                "alerts": [
-                    {
-                        "status": "firing",
-                        "labels": {
-                            "alertname": "HighErrorRateWarning",
-                            "service": "cart-svc",
-                            "severity": "warning",
-                        },
-                        "annotations": {"summary": "warn", "value": "0.09"},
-                        "fingerprint": "fp-ack",
-                    }
-                ],
-            },
-            bus=bus,
-            hub=hub,
-        )
-    row = ami.list_pre_alerts()[0]
-    acked = ami.ack_pre_alert(row["id"])
+    pre = ami.PreAlert(
+        id="pre_test_1",
+        fingerprint="fp-ack",
+        service="cart-svc",
+        alertname="HighErrorRateWarning",
+        severity="warning",
+        summary="warn",
+        error_rate="9.0%",
+        status="firing",
+        acked=False,
+    )
+    ami._PRE_ALERTS[pre.id] = pre
+    acked = ami.ack_pre_alert(pre.id)
     assert acked and acked["acked"] is True
     assert ami.list_pre_alerts() == []
+    # emit path unused here
+    assert hub.publish.await_count == 0
 
 
 @pytest.mark.asyncio
