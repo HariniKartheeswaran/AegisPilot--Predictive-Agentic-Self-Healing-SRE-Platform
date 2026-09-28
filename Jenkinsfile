@@ -109,8 +109,24 @@ pipeline {
 
                     . .venv/bin/activate || . .venv/Scripts/activate
 
+                    export PIP_DEFAULT_TIMEOUT=120
+                    export PIP_RETRIES=5
+
                     python -m pip install --upgrade pip
-                    python -m pip install -r backend/requirements.txt
+
+                    # Retry pip on transient PyPI / network timeouts (seen on Jenkins agents).
+                    attempt=1
+                    max_attempts=3
+                    until python -m pip install -r backend/requirements.txt; do
+                      if [ "$attempt" -ge "$max_attempts" ]; then
+                        echo "pip install failed after ${max_attempts} attempts"
+                        exit 1
+                      fi
+                      echo "pip install attempt ${attempt} failed; retrying in 15s..."
+                      attempt=$((attempt + 1))
+                      sleep 15
+                    done
+
                     python -m pip install pytest pytest-cov pytest-asyncio flake8 httpx ruff
                 '''
             }

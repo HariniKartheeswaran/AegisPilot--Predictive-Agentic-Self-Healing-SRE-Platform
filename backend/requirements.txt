@@ -21,6 +21,7 @@ numpy==2.2.1           # vector similarity for incident memory
 
 # --- Demo asset generation (realistic Grafana snapshot for vision agent) ---
 matplotlib==3.10.0
+python-dateutil==2.9.0.post0  # explicit pin — Jenkins PyPI timeouts flaked on this transitive dep
 
 # --- Cloud storage/messaging (Phase 3-4; used when BACKEND=cloud) ---
 google-cloud-firestore==2.29.0
