@@ -204,6 +204,17 @@ async def ack_pre_alert_route(pre_id: str):
     return {"acked": True, "pre_alert": row}
 
 
+async def _dispatch_alert_local(request: Request, alert: Alert) -> None:
+    """Run the orchestrator on *this* pod (SSE clients are here).
+
+    Do **not** route demo Fire through Pub/Sub pull after blue/green promote:
+    the new slot's streaming pull can lag or compete, so the UI toast says
+    "published" while no ``incident_created`` ever reaches connected browsers.
+    Alertmanager / Jenkins still use ``bus.publish`` as before.
+    """
+    asyncio.create_task(request.app.state.orchestrator.handle_alert(alert))
+
+
 @app.post("/api/demo/fire")
 async def demo_fire(request: Request):
     """Fire an incident.
@@ -215,8 +226,6 @@ async def demo_fire(request: Request):
 
     Otherwise: rotating demo scenario (local / offline).
     """
-    import asyncio
-
     from backend.services.alertmanager_ingest import suppress_am_full_for
     from backend.services.live_fire import (
         live_mode_enabled,
@@ -226,17 +235,24 @@ async def demo_fire(request: Request):
 
     storage = request.app.state.storage
     if live_mode_enabled():
-        prepared = await asyncio.to_thread(
-            prepare_live_fire, storage, "checkout-svc", 0.42
-        )
+        try:
+            prepared = await asyncio.to_thread(
+                prepare_live_fire, storage, "checkout-svc", 0.42
+            )
+        except Exception as exc:  # noqa: BLE001 — surface K8s inject failures to UI
+            log.exception("live Fire prepare failed")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Live Fire K8s inject failed: {exc}",
+            ) from exc
         alert = prepared["alert"]
         # One agent pipeline from Fire; Prom→AM still delivers warning pre-alerts.
         suppress_am_full_for(alert.service, 300.0)
-        # Start load BEFORE publish so scrape/rate windows fill as agents begin.
+        # Start load BEFORE agents so scrape/rate windows fill as the run begins.
         asyncio.create_task(
             asyncio.to_thread(warm_live_metrics, storage, alert.service, 24, 120.0)
         )
-        await request.app.state.bus.publish(alert)
+        await _dispatch_alert_local(request, alert)
         return {
             "accepted": True,
             "scenario": "live",
@@ -250,7 +266,7 @@ async def demo_fire(request: Request):
 
     sc = next_scenario()
     alert = Alert(**sc.alert)
-    await request.app.state.bus.publish(alert)
+    await _dispatch_alert_local(request, alert)
     return {"accepted": True, "scenario": sc.key, "service": alert.service, "alert": alert.alert}
 
 
@@ -329,7 +345,7 @@ async def custom_incident(
         snapshot = str(dest.relative_to(SEED_DIR.parent.parent))
 
     payload = Alert(alert=alert, service=service, error_rate=error_rate, grafana_snapshot=snapshot)
-    await request.app.state.bus.publish(payload)
+    await _dispatch_alert_local(request, payload)
     return {"accepted": True, "service": service, "logs_ingested": len(lines),
             "deploy": bool(deploy_version.strip()), "vision_image": snapshot is not None}
 

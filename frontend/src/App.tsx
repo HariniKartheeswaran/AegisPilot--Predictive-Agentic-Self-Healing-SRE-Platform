@@ -38,8 +38,12 @@ export default function App() {
   const fireAlert = async () => {
     setFiring(true);
     try {
-      await api.fireDemoAlert();
-      flash("Alert published to the event bus — orchestrator engaging.");
+      const res = await api.fireDemoAlert();
+      flash(
+        res.live
+          ? `Live Fire on ${res.service} — agents engaging on this War Room.`
+          : `Alert published (${res.scenario}) — orchestrator engaging.`
+      );
     } catch (e) {
       flash(e instanceof Error ? e.message : "Failed to publish alert");
     } finally {

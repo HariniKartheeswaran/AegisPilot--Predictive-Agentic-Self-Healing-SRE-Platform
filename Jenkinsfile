@@ -111,7 +111,9 @@ pipeline {
 
                     export PIP_DEFAULT_TIMEOUT=120
                     export PIP_RETRIES=5
+                    export PYTHONUNBUFFERED=1
 
+                    echo "▶ Upgrading pip..."
                     python -m pip install --upgrade pip
 
                     # Retry pip on transient PyPI / network timeouts (seen on Jenkins agents).
@@ -127,7 +129,9 @@ pipeline {
                       sleep 15
                     done
 
+                    echo "▶ Installing test tools..."
                     python -m pip install pytest pytest-cov pytest-asyncio flake8 httpx ruff
+                    echo "▶ Dependencies ready."
                 '''
             }
         }
@@ -454,6 +458,41 @@ pipeline {
                     )
                 ]) {
                     sh 'bash "$K8S_ASSETS_DIR/scripts/k8s_promote.sh"'
+
+                    // Guarantee traffic is on the candidate before judges open the UI.
+                    sh '''
+                        set -eu
+                        ns="${K8S_NAMESPACE:-aegispilot}"
+                        svc="${ACTIVE_SERVICE:-aegis-warroom}"
+                        slot="${DEPLOY_COLOR}"
+                        # Opposite of candidate = previous slot that was scaled to 0.
+                        if [ "$slot" = "blue" ]; then prev=green; else prev=blue; fi
+                        echo "▶ Confirming Service endpoints for slot=${slot}..."
+                        ready=0
+                        for i in $(seq 1 30); do
+                          ep=$(kubectl -n "$ns" get endpoints "$svc" -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null || true)
+                          pod_ip=$(kubectl -n "$ns" get pods -l "app=aegis-warroom,slot=${slot}" \
+                            -o jsonpath='{.items[0].status.podIP}' 2>/dev/null || true)
+                          if [ -n "$ep" ] && [ -n "$pod_ip" ] && echo "$ep" | grep -q "$pod_ip"; then
+                            echo "▶ Endpoints ready: $ep (pod $pod_ip)"
+                            ready=1
+                            break
+                          fi
+                          echo "  attempt $i/30 — endpoints='$ep' pod_ip='$pod_ip'"
+                          sleep 2
+                        done
+                        if [ "$ready" -ne 1 ]; then
+                          echo "ERROR: Service $svc has no ready endpoints for slot=$slot" >&2
+                          kubectl -n "$ns" get endpoints "$svc" -o wide || true
+                          kubectl -n "$ns" get pods -l app=aegis-warroom -o wide || true
+                          exit 1
+                        fi
+                        echo "▶ Waiting for previous slot ${prev} pods to terminate (no Pub/Sub steal)..."
+                        kubectl -n "$ns" wait --for=delete pod \
+                          -l "app=aegis-warroom,slot=${prev}" \
+                          --timeout=120s 2>/dev/null \
+                          || echo "WARNING: timed out waiting for ${prev} pods (continuing)"
+                    '''
                 }
 
                 script {
@@ -478,6 +517,31 @@ pipeline {
                 ]) {
                     sh 'bash "$K8S_ASSETS_DIR/scripts/k8s_smoke.sh"'
                 }
+
+                // External URL the judges open — must answer after promote (not only in-pod smoke).
+                sh '''
+                    set -eu
+                    test -n "$AEGIS_API_URL" || {
+                      echo "AEGIS_API_URL is empty; skipping external War Room readiness check." >&2
+                      exit 0
+                    }
+                    echo "▶ Waiting for external War Room: $AEGIS_API_URL/api/health"
+                    ok=0
+                    for i in $(seq 1 30); do
+                      if curl -sf --max-time 5 "$AEGIS_API_URL/api/health" | grep -qi '"status"[[:space:]]*:[[:space:]]*"ok"'; then
+                        echo "▶ War Room is LIVE for judges: $AEGIS_API_URL"
+                        curl -sf --max-time 5 "$AEGIS_API_URL/api/health" || true
+                        ok=1
+                        break
+                      fi
+                      echo "  attempt $i/30 — not ready yet..."
+                      sleep 3
+                    done
+                    if [ "$ok" -ne 1 ]; then
+                      echo "ERROR: War Room did not become ready at $AEGIS_API_URL/api/health" >&2
+                      exit 1
+                    fi
+                '''
             }
         }
 
@@ -507,6 +571,50 @@ pipeline {
                         --commit "$APP_COMMIT" \
                         --color "$DEPLOY_COLOR" \
                         --url "$AEGIS_API_URL"
+                '''
+            }
+        }
+
+        stage('Auto Fire Demo Incident') {
+            when {
+                expression {
+                    return params.DEPLOY_ENABLED
+                }
+            }
+
+            steps {
+                // After promote + live health: start Fire so judges see agents
+                // run without a manual click (demo path used after CI finishes).
+                sh '''
+                    set -eu
+                    test -n "$AEGIS_API_URL" || {
+                      echo "AEGIS_API_URL empty; skipping auto Fire." >&2
+                      exit 0
+                    }
+                    echo "▶ Auto-firing demo incident at $AEGIS_API_URL/api/demo/fire"
+                    ok=0
+                    for i in $(seq 1 10); do
+                      code=$(curl -sS -o /tmp/aegis-fire.json -w "%{http_code}" \
+                        --max-time 30 \
+                        -X POST "$AEGIS_API_URL/api/demo/fire" \
+                        -H "Content-Type: application/json" \
+                        -d '{}' || true)
+                      if [ "$code" = "200" ]; then
+                        echo "▶ Auto Fire accepted (HTTP $code):"
+                        cat /tmp/aegis-fire.json || true
+                        echo
+                        ok=1
+                        break
+                      fi
+                      echo "  attempt $i/10 — HTTP ${code:-curl-fail}, retrying..."
+                      sleep 3
+                    done
+                    if [ "$ok" -ne 1 ]; then
+                      echo "ERROR: Auto Fire failed after promote" >&2
+                      cat /tmp/aegis-fire.json 2>/dev/null || true
+                      exit 1
+                    fi
+                    echo "▶ Open War Room — incident should already be running: $AEGIS_API_URL"
                 '''
             }
         }
