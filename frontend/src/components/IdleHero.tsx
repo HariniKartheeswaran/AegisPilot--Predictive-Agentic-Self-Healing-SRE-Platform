@@ -85,9 +85,10 @@ export default function IdleHero({
       <button onClick={onFire} disabled={firing} className="btn btn-primary px-6 py-3 text-[15px]">
         {firing ? <Spinner /> : <Zap size={17} />} Fire Incident
       </button>
-      <p className="-mt-3 text-[11px] text-slate-600">
-        Simulates a <span className="font-mono text-slate-500">HighErrorRate</span> alert on{" "}
-        <span className="font-mono text-slate-500">checkout-svc</span>.
+      <p className="-mt-3 max-w-md text-[11px] text-slate-600">
+        Or use <span className="font-semibold text-slate-500">Custom</span> — paste Grafana /
+        Prometheus / Loki log lines and an optional dashboard screenshot for a full agent run
+        on your data (no hardcoded scenario).
       </p>
     </motion.section>
   );

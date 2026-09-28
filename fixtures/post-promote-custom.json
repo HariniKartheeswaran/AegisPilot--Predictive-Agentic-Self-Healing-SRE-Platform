@@ -1,0 +1,15 @@
+{
+  "service": "checkout-svc",
+  "alert": "HighErrorRate",
+  "error_rate": "42%",
+  "deploy_version": "v-bad-deploy",
+  "rollback_target": "v1.0.0",
+  "logs": [
+    "checkout-svc: scrape from Prometheus shows rate(http_requests_total{status=~\"5..\"}[1m]) spike",
+    "ERROR checkout handler returned 500 after bad deploy — connection pool exhausted",
+    "ERROR POST /api/checkout failed: upstream payments-svc timeout (trace_id=live)",
+    "WARN Grafana panel HTTP 5xx rate ~42% over last 2m (dashboard aegispilot)",
+    "INFO Loki: repeated 'HikariCP - Connection is not available' before timeout",
+    "WARN error budget burn: checkout-svc SEV2 candidate — probable cause bad deploy"
+  ]
+}
