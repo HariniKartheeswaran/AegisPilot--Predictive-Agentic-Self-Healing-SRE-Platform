@@ -15,17 +15,12 @@ export default function CustomIncidentModal({
   onClose: () => void;
   onFired: (msg: string) => void;
 }) {
-  const [service, setService] = useState("auth-svc");
+  const [service, setService] = useState("checkout-svc");
   const [alert, setAlert] = useState("HighErrorRate");
-  const [errorRate, setErrorRate] = useState("23%");
-  const [logs, setLogs] = useState(
-    "auth-svc v3.2.0 rollout complete, 5/5 pods ready\n" +
-      "ERROR JWT validation failed: token signature mismatch after key rotation\n" +
-      "ERROR 500 on POST /api/login (trace_id=a91f..)\n" +
-      "WARN auth error rate 23% over last 60s exceeds SLO 2%"
-  );
-  const [deployVersion, setDeployVersion] = useState("v3.2.0");
-  const [rollbackTarget, setRollbackTarget] = useState("v3.1.9");
+  const [errorRate, setErrorRate] = useState("");
+  const [logs, setLogs] = useState("");
+  const [deployVersion, setDeployVersion] = useState("");
+  const [rollbackTarget, setRollbackTarget] = useState("");
   const [image, setImage] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -111,16 +106,27 @@ export default function CustomIncidentModal({
                 </div>
                 <div>
                   <label className={label}>Error rate / metric</label>
-                  <input className={field} value={errorRate} onChange={(e) => setErrorRate(e.target.value)} />
+                  <input
+                    className={field}
+                    value={errorRate}
+                    onChange={(e) => setErrorRate(e.target.value)}
+                    placeholder="e.g. 42% from Prometheus"
+                  />
                 </div>
               </div>
 
               <div>
-                <label className={label}>Log lines (one per line — the Diagnosis agent classifies these)</label>
+                <label className={label}>
+                  Log lines (paste from Grafana Explore / Loki / Prom annotations — one per line)
+                </label>
                 <textarea
                   className={`${field} h-36 resize-none font-mono text-[12px] leading-relaxed`}
                   value={logs}
                   onChange={(e) => setLogs(e.target.value)}
+                  placeholder={
+                    "Paste real lines from Grafana/Loki or Prom alert annotations…\n" +
+                    "ERROR …\nWARN …"
+                  }
                 />
               </div>
 

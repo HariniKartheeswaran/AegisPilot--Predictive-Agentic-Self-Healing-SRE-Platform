@@ -92,7 +92,7 @@ pipeline {
                         echo "▶ Application Commit : ${env.APP_COMMIT}"
                         echo "▶ Build Version      : ${env.IMAGE_TAG}"
                         echo "▶ Deployed app name  : ${env.APP_NAME} (War Room)"
-                        echo "▶ Fire target svc    : checkout-svc (live inject — not aegis-warroom)"
+                        echo "▶ After promote      : Auto Custom from fixtures/post-promote-custom.json"
                         echo "▶ Namespace          : ${env.NAMESPACE}"
                         echo "▶ Target Image       : ${env.IMAGE}"
                         echo "============================================================"
@@ -525,7 +525,6 @@ pipeline {
                 stage('Publish Deploy Metadata') {
                     steps {
                         echo "▶ Recording deploy of ${env.APP_NAME} for Correlation (does NOT open an incident)."
-                        echo "▶ War Room UI / Fire API share host: ${env.AEGIS_API_URL}"
 
                         sh '''
                             set -eu
@@ -547,49 +546,37 @@ pipeline {
                     }
                 }
 
-                stage('Auto Fire Incident') {
+                stage('Auto Custom Incident') {
                     steps {
-                        // Same host as War Room UI. Fire = live inject on checkout-svc.
-                        // Custom button = judges' own multipart form (not Jenkins).
+                        // Same path as War Room → Custom button (/api/incidents/custom).
+                        // Payload = fixtures/post-promote-custom.json (edit logs there — not demo/fire).
+                        echo "▶ After traffic promote: open Custom incident from fixture (Grafana/Prom-style logs)."
                         sh '''
                             set -eu
+                            . .venv/bin/activate || . .venv/Scripts/activate
                             test -n "$AEGIS_API_URL" || {
-                              echo "AEGIS_API_URL empty; skipping auto Fire." >&2
+                              echo "AEGIS_API_URL empty; skipping Auto Custom." >&2
                               exit 0
                             }
-                            echo "▶ War Room UI (open in browser): $AEGIS_API_URL"
-                            echo "▶ Fire endpoint (same app):      $AEGIS_API_URL/api/fire"
-                            echo "▶ Fallback (legacy alias):       $AEGIS_API_URL/api/demo/fire"
+                            test -f fixtures/post-promote-custom.json
+                            echo "▶ War Room UI: $AEGIS_API_URL"
+                            echo "▶ Custom API:  $AEGIS_API_URL/api/incidents/custom"
                             ok=0
                             for i in $(seq 1 10); do
-                              code=$(curl -sS -o /tmp/aegis-fire.json -w "%{http_code}" \
-                                --max-time 30 \
-                                -X POST "$AEGIS_API_URL/api/fire" \
-                                -H "Content-Type: application/json" \
-                                -d '{}' || true)
-                              if [ "$code" != "200" ]; then
-                                code=$(curl -sS -o /tmp/aegis-fire.json -w "%{http_code}" \
-                                  --max-time 30 \
-                                  -X POST "$AEGIS_API_URL/api/demo/fire" \
-                                  -H "Content-Type: application/json" \
-                                  -d '{}' || true)
-                              fi
-                              if [ "$code" = "200" ]; then
-                                echo "▶ Fire accepted (HTTP $code) — incident service = checkout-svc:"
-                                cat /tmp/aegis-fire.json || true
-                                echo
+                              if python scripts/post_custom_incident.py \
+                                   --url "$AEGIS_API_URL" \
+                                   --payload fixtures/post-promote-custom.json; then
                                 ok=1
                                 break
                               fi
-                              echo "  attempt $i/10 — HTTP ${code:-curl-fail}, retrying..."
+                              echo "  attempt $i/10 failed; retrying..."
                               sleep 3
                             done
                             if [ "$ok" -ne 1 ]; then
-                              echo "ERROR: Auto Fire failed after promote" >&2
-                              cat /tmp/aegis-fire.json 2>/dev/null || true
+                              echo "ERROR: Auto Custom incident failed" >&2
                               exit 1
                             fi
-                            echo "▶ Open War Room UI — agents should run on checkout-svc: $AEGIS_API_URL"
+                            echo "▶ Open War Room — Custom incident should be running: $AEGIS_API_URL"
                         '''
                     }
                 }
