@@ -75,6 +75,26 @@ if [[ "$verified_slot" != "$target_slot" ]]; then
   fail "service selector verification failed (expected ${target_slot}, got ${verified_slot})"
 fi
 
+# Wait until Service endpoints actually point at the new slot before killing old.
+log "waiting for ${ACTIVE_SERVICE} endpoints on slot=${target_slot}"
+ready=0
+for _ in $(seq 1 30); do
+  ep=$(kubectl get endpoints "$ACTIVE_SERVICE" -n "$NAMESPACE" \
+    -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null || true)
+  pod_ip=$(kubectl get pods -n "$NAMESPACE" \
+    -l "app=aegis-warroom,slot=${target_slot}" \
+    -o jsonpath='{.items[0].status.podIP}' 2>/dev/null || true)
+  if [[ -n "$ep" && -n "$pod_ip" && "$ep" == *"$pod_ip"* ]]; then
+    log "endpoints ready: ${ep}"
+    ready=1
+    break
+  fi
+  sleep 2
+done
+if [[ "$ready" -ne 1 ]]; then
+  fail "timed out waiting for ${ACTIVE_SERVICE} endpoints to include slot=${target_slot}"
+fi
+
 # Keep ConfigMap in sync for humans / next pod boot. Live remediation reads the
 # Service selector as source of truth (does not wait for a ConfigMap restart).
 if kubectl get configmap aegis-warroom-config -n "$NAMESPACE" >/dev/null 2>&1; then

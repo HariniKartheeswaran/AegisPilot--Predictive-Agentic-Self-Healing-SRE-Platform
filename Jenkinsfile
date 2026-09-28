@@ -458,6 +458,34 @@ pipeline {
                     )
                 ]) {
                     sh 'bash "$K8S_ASSETS_DIR/scripts/k8s_promote.sh"'
+
+                    // Guarantee traffic is on the candidate before judges open the UI.
+                    sh '''
+                        set -eu
+                        ns="${K8S_NAMESPACE:-aegispilot}"
+                        svc="${ACTIVE_SERVICE:-aegis-warroom}"
+                        slot="${DEPLOY_COLOR}"
+                        echo "▶ Confirming Service endpoints for slot=${slot}..."
+                        ready=0
+                        for i in $(seq 1 30); do
+                          ep=$(kubectl -n "$ns" get endpoints "$svc" -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null || true)
+                          pod_ip=$(kubectl -n "$ns" get pods -l "app=aegis-warroom,slot=${slot}" \
+                            -o jsonpath='{.items[0].status.podIP}' 2>/dev/null || true)
+                          if [ -n "$ep" ] && [ -n "$pod_ip" ] && echo "$ep" | grep -q "$pod_ip"; then
+                            echo "▶ Endpoints ready: $ep (pod $pod_ip)"
+                            ready=1
+                            break
+                          fi
+                          echo "  attempt $i/30 — endpoints='$ep' pod_ip='$pod_ip'"
+                          sleep 2
+                        done
+                        if [ "$ready" -ne 1 ]; then
+                          echo "ERROR: Service $svc has no ready endpoints for slot=$slot" >&2
+                          kubectl -n "$ns" get endpoints "$svc" -o wide || true
+                          kubectl -n "$ns" get pods -l app=aegis-warroom -o wide || true
+                          exit 1
+                        fi
+                    '''
                 }
 
                 script {
@@ -482,6 +510,31 @@ pipeline {
                 ]) {
                     sh 'bash "$K8S_ASSETS_DIR/scripts/k8s_smoke.sh"'
                 }
+
+                // External URL the judges open — must answer after promote (not only in-pod smoke).
+                sh '''
+                    set -eu
+                    test -n "$AEGIS_API_URL" || {
+                      echo "AEGIS_API_URL is empty; skipping external War Room readiness check." >&2
+                      exit 0
+                    }
+                    echo "▶ Waiting for external War Room: $AEGIS_API_URL/api/health"
+                    ok=0
+                    for i in $(seq 1 30); do
+                      if curl -sf --max-time 5 "$AEGIS_API_URL/api/health" | grep -qi '"status"[[:space:]]*:[[:space:]]*"ok"'; then
+                        echo "▶ War Room is LIVE for judges: $AEGIS_API_URL"
+                        curl -sf --max-time 5 "$AEGIS_API_URL/api/health" || true
+                        ok=1
+                        break
+                      fi
+                      echo "  attempt $i/30 — not ready yet..."
+                      sleep 3
+                    done
+                    if [ "$ok" -ne 1 ]; then
+                      echo "ERROR: War Room did not become ready at $AEGIS_API_URL/api/health" >&2
+                      exit 1
+                    fi
+                '''
             }
         }
 
