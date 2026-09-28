@@ -21,6 +21,12 @@ os.environ["GEMINI_API_KEY"] = "mock-key-for-tests"
 
 
 @pytest.fixture
+def anyio_backend():
+    """Force asyncio — trio backend flakes on Windows under pytest-anyio."""
+    return "asyncio"
+
+
+@pytest.fixture
 def temp_db(tmp_path: Path):
     """Provides an isolated temporary SQLite database path for each test."""
     db_file = tmp_path / "test_aegisops.db"

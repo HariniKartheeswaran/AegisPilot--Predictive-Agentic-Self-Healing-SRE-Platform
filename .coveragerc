@@ -1,0 +1,14 @@
+[run]
+source = backend
+omit =
+    backend/seed/*
+    backend/services/live_fire.py
+    backend/services/live_snapshot.py
+    backend/tools/remediation.py
+    backend/adk/tools.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if TYPE_CHECKING:
+    raise NotImplementedError

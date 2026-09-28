@@ -134,7 +134,7 @@ pipeline {
 
         stage('Coverage Gate') {
             steps {
-                echo "▶ Enforcing minimum test coverage threshold (temporary development gate: >= 60%)..."
+                echo "▶ Enforcing minimum test coverage threshold (>= 85%)..."
 
                 sh '''
                     set -eu
@@ -145,7 +145,8 @@ pipeline {
                         --cov=backend \
                         --cov-report=xml:reports/coverage.xml \
                         --cov-report=term \
-                        --cov-fail-under=60
+                        --cov-fail-under=85 \
+                        --cov-config=.coveragerc
                 '''
             }
         }

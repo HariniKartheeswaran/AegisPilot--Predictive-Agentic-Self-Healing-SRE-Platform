@@ -95,6 +95,42 @@ def test_kubernetes_mode_rejects_unknown_target(monkeypatch):
     asyncio.run(_run())
 
 
+def test_execute_remediation_simulation_non_rollback(monkeypatch):
+    monkeypatch.setenv("REMEDIATION_MODE", "simulate")
+
+    async def _run():
+        plan = build_plan(
+            action="restart",
+            service="checkout-svc",
+            rollback_target=None,
+            rationale="bounce pods",
+        )
+        result = await execute_remediation(plan, "checkout-svc")
+        assert result.ok is True
+        assert result.simulated is True
+        assert len(result.steps) == 2
+        assert result.steps[0].label.startswith("Execute")
+
+    asyncio.run(_run())
+
+
+def test_execute_unknown_mode_falls_back_to_simulate(monkeypatch):
+    monkeypatch.setenv("REMEDIATION_MODE", "weird-mode")
+
+    async def _run():
+        plan = build_plan(
+            action="flag_off",
+            service="cart-svc",
+            rollback_target=None,
+            rationale="disable flag",
+        )
+        result = await execute_remediation(plan, "cart-svc")
+        assert result.ok is True
+        assert result.simulated is True
+
+    asyncio.run(_run())
+
+
 def test_warroom_deployment_follows_active_slot(monkeypatch):
     """War-room incidents map to the active blue/green Deployment."""
     import backend.tools.remediation as rem

@@ -141,16 +141,52 @@ def fetch_live_log_lines(service: str, limit: int = 40) -> list[LogLine]:
     return _logs_from_k8s(service, limit=limit)
 
 
-def _logs_from_loki(service: str, limit: int = 40) -> list[LogLine]:
+def _classify_log_level(msg: str) -> str:
+    if re.search(r"\berror\b|request_failed|\b5\d\d\b", msg, re.I):
+        return "ERROR"
+    if re.search(r"\bwarn", msg, re.I):
+        return "WARN"
+    return "INFO"
+
+
+def _loki_base_url() -> str:
     s = get_settings()
     base = (
         getattr(s, "loki_url", None)
         or __import__("os").environ.get("LOKI_URL")
         or ""
     ).strip()
-    if not base and (s.grafana_url or "").strip():
+    if base:
+        return base
+    if (s.grafana_url or "").strip():
         host = s.grafana_url.rstrip("/").rsplit(":", 1)[0]
-        base = f"{host}:3100"
+        return f"{host}:3100"
+    return ""
+
+
+def _parse_loki_streams(service: str, body: dict, limit: int) -> list[LogLine]:
+    out: list[LogLine] = []
+    for stream in (body.get("data") or {}).get("result") or []:
+        for ts_ns, msg in stream.get("values") or []:
+            try:
+                ts_ms = int(int(ts_ns) / 1_000_000)
+            except (TypeError, ValueError):
+                ts_ms = now_ms()
+            out.append(
+                LogLine(
+                    id=f"log_live_{service}_{ts_ms}_{len(out)}",
+                    service=service,
+                    ts=ts_ms,
+                    level=_classify_log_level(msg),
+                    message=msg.strip()[:500],
+                )
+            )
+    out.sort(key=lambda x: x.ts)
+    return out[-limit:]
+
+
+def _logs_from_loki(service: str, limit: int = 40) -> list[LogLine]:
+    base = _loki_base_url()
     if not base:
         return []
     end_ns = int(time.time() * 1e9)
@@ -174,29 +210,7 @@ def _logs_from_loki(service: str, limit: int = 40) -> list[LogLine]:
     except Exception as exc:
         log.warning("loki log fetch failed: %s", exc)
         return []
-
-    out: list[LogLine] = []
-    for stream in (body.get("data") or {}).get("result") or []:
-        for ts_ns, msg in stream.get("values") or []:
-            try:
-                ts_ms = int(int(ts_ns) / 1_000_000)
-            except (TypeError, ValueError):
-                ts_ms = now_ms()
-            level = "ERROR" if re.search(r"\berror\b|request_failed|\b5\d\d\b", msg, re.I) else (
-                "WARN" if re.search(r"\bwarn", msg, re.I) else "INFO"
-            )
-            out.append(
-                LogLine(
-                    id=f"log_live_{service}_{ts_ms}_{len(out)}",
-                    service=service,
-                    ts=ts_ms,
-                    level=level,
-                    message=msg.strip()[:500],
-                )
-            )
-    out.sort(key=lambda x: x.ts)
-    return out[-limit:]
-
+    return _parse_loki_streams(service, body, limit)
 
 def _logs_from_k8s(service: str, limit: int = 40) -> list[LogLine]:
     try:
@@ -225,7 +239,7 @@ def _logs_from_k8s(service: str, limit: int = 40) -> list[LogLine]:
                 msg = m.group(2)
             except Exception:
                 pass
-        level = "ERROR" if re.search(r"request_failed|\berror\b|\b5\d\d\b", msg, re.I) else "INFO"
+        level = _classify_log_level(msg)
         out.append(
             LogLine(
                 id=f"log_k8s_{service}_{ts_ms}_{i}",
@@ -342,6 +356,25 @@ def _current_error_rate(service: str) -> float:
         return 0.0
 
 
+def _merge_load(a: dict[str, int], b: dict[str, int]) -> dict[str, int]:
+    return {
+        "ok": a["ok"] + b["ok"],
+        "err": a["err"] + b["err"],
+        "total": a["total"] + b["total"],
+    }
+
+
+def _sustain_load(service: str, load: dict[str, int], sustain_s: float) -> dict[str, int]:
+    deadline = time.monotonic() + max(0.0, sustain_s)
+    while time.monotonic() < deadline:
+        if _current_error_rate(service) <= 0.01:
+            log.info("live fire sustain stop — ERROR_RATE cleared on %s", service)
+            break
+        time.sleep(3.0)
+        load = _merge_load(load, _generate_load(service, bursts=12))
+    return load
+
+
 def warm_live_metrics(
     storage: StorageService,
     service: str = "checkout-svc",
@@ -366,20 +399,7 @@ def warm_live_metrics(
         time.sleep(1.0)
         load = _generate_load(service, bursts=bursts)
         n_logs = ingest_live_logs(storage, service)
-
-        deadline = time.monotonic() + max(0.0, sustain_s)
-        while time.monotonic() < deadline:
-            if _current_error_rate(service) <= 0.01:
-                log.info("live fire sustain stop — ERROR_RATE cleared on %s", service)
-                break
-            time.sleep(3.0)
-            part = _generate_load(service, bursts=12)
-            load = {
-                "ok": load["ok"] + part["ok"],
-                "err": load["err"] + part["err"],
-                "total": load["total"] + part["total"],
-            }
-
+        load = _sustain_load(service, load, sustain_s)
         log.info("live fire warmed service=%s load=%s logs=%d", service, load, n_logs)
         return load
     except Exception:  # noqa: BLE001
