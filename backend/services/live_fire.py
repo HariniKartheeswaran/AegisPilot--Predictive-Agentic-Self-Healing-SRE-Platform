@@ -90,14 +90,21 @@ def clear_live_inject(service: str) -> None:
 
 
 def _work_urls(service: str) -> list[str]:
+    """Probe targets for /api/work load generation.
+
+    Cleartext HTTP is intentional: scrape pods expose :8080 only inside the
+    cluster / NodePort lab — there is no TLS sidecar on those demo services.
+    """
     ns = get_settings().k8s_namespace
+    # Cluster-internal + short-name + NodePort (lab IP). Scheme is cleartext by design.
+    scheme = "http"  # NOSONAR python:S5332 — in-cluster scrape has no TLS
     urls = [
-        f"http://{service}.{ns}.svc.cluster.local:8080/api/work",
-        f"http://{service}:8080/api/work",
+        f"{scheme}://{service}.{ns}.svc.cluster.local:8080/api/work",
+        f"{scheme}://{service}:8080/api/work",
     ]
     port = _NODEPORTS.get(service)
     if port:
-        urls.append(f"http://13.207.225.219:{port}/api/work")
+        urls.append(f"{scheme}://13.207.225.219:{port}/api/work")
     return urls
 
 

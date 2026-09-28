@@ -202,6 +202,54 @@ async def test_process_webhook_critical_suppressed_during_fire_cooldown():
 
 
 @pytest.mark.asyncio
+async def test_process_webhook_ignores_non_dict_and_resolves_pre():
+    bus = AsyncMock()
+    hub = AsyncMock()
+    with patch("backend.services.slack.post_incident", new_callable=AsyncMock):
+        await ami.process_webhook(
+            {
+                "alerts": [
+                    {
+                        "status": "firing",
+                        "labels": {
+                            "alertname": "HighErrorRateWarning",
+                            "service": "cart-svc",
+                            "severity": "warning",
+                            "stage": "pre",
+                        },
+                        "annotations": {"summary": "warn", "value": "0.1"},
+                        "fingerprint": "fp-resolve",
+                    }
+                ],
+            },
+            bus=bus,
+            hub=hub,
+        )
+        out = await ami.process_webhook(
+            {
+                "alerts": [
+                    "not-a-dict",
+                    {
+                        "status": "resolved",
+                        "labels": {
+                            "alertname": "HighErrorRateWarning",
+                            "service": "cart-svc",
+                            "severity": "warning",
+                            "stage": "pre",
+                        },
+                        "fingerprint": "fp-resolve",
+                    },
+                ],
+            },
+            bus=bus,
+            hub=hub,
+        )
+    assert out["ignored"] == 1
+    assert out["resolved"] == 1
+    assert ami.list_pre_alerts() == []
+
+
+@pytest.mark.asyncio
 async def test_process_webhook_critical_skipped_when_incident_open():
     bus = AsyncMock()
     hub = AsyncMock()
