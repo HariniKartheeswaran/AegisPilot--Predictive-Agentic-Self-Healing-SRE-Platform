@@ -282,8 +282,9 @@ async def _process_one_alert(
         return "resolved"
 
     if is_pre:
-        await _handle_pre_alert(hub, storage, labels, entry, service, fingerprint)
-        return "pre_alerts"
+        # Demo: Fire-only path — ignore Prom warning pre-alerts (no banner / Slack).
+        log.info("AM pre-alert ignored for %s (Fire-only demo mode)", service)
+        return "ignored"
 
     if _full_suppressed(service) or _has_open_incident(storage, service):
         log.info(
