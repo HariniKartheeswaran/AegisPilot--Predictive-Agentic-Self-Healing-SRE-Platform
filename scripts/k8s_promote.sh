@@ -110,5 +110,13 @@ prev_deployment=$(deployment_for_slot "$current_slot")
 log "scaling previous slot ${current_slot} (${prev_deployment}) to 0 replicas"
 kubectl scale deployment "$prev_deployment" -n "$NAMESPACE" --replicas=0 >/dev/null
 
+# Wait until the old slot's pods are gone so they cannot steal Pub/Sub pulls
+# or keep serving stale SSE while judges open War Room / Fire.
+log "waiting for previous slot ${current_slot} pods to terminate"
+kubectl wait --for=delete pod \
+  -l "app=aegis-warroom,slot=${current_slot}" \
+  -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1 \
+  || log "WARNING: timed out waiting for ${current_slot} pods to delete (continuing)"
+
 log "promote succeeded: ${current_slot} -> ${target_slot}"
 exit 0

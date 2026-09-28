@@ -80,19 +80,28 @@ export default function Header({
           </div>
         </div>
 
-        {/* Incident summary */}
+        {/* Incident summary — hide Detected/SEV noise when no incident is active */}
         <div className="flex flex-wrap items-center gap-2.5">
-          <StatusPill status={state.status} />
-          <SeverityBadge severity={state.severity} />
-          {state.service && (
-            <span className="chip border-white/10 bg-white/5 font-mono text-slate-300">
-              {state.service}
+          {state.incidentId ? (
+            <>
+              <StatusPill status={state.status} />
+              <SeverityBadge severity={state.severity} />
+              {state.service && (
+                <span className="chip border-white/10 bg-white/5 font-mono text-slate-300">
+                  {state.service}
+                </span>
+              )}
+              <span className="chip border-white/10 bg-white/5 text-slate-400">
+                <Clock size={12} className={terminal ? "" : "text-signal-blue"} />
+                <span className="font-mono">{elapsed}</span>
+              </span>
+            </>
+          ) : (
+            <span className="chip border-white/10 bg-white/5 text-slate-400" role="status">
+              <span className="h-1.5 w-1.5 rounded-full bg-slate-500" />
+              Idle
             </span>
           )}
-          <span className="chip border-white/10 bg-white/5 text-slate-400">
-            <Clock size={12} className={terminal ? "" : "text-signal-blue"} />
-            <span className="font-mono">{elapsed}</span>
-          </span>
         </div>
 
         {/* Actions */}

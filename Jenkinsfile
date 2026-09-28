@@ -465,6 +465,8 @@ pipeline {
                         ns="${K8S_NAMESPACE:-aegispilot}"
                         svc="${ACTIVE_SERVICE:-aegis-warroom}"
                         slot="${DEPLOY_COLOR}"
+                        # Opposite of candidate = previous slot that was scaled to 0.
+                        if [ "$slot" = "blue" ]; then prev=green; else prev=blue; fi
                         echo "▶ Confirming Service endpoints for slot=${slot}..."
                         ready=0
                         for i in $(seq 1 30); do
@@ -485,6 +487,11 @@ pipeline {
                           kubectl -n "$ns" get pods -l app=aegis-warroom -o wide || true
                           exit 1
                         fi
+                        echo "▶ Waiting for previous slot ${prev} pods to terminate (no Pub/Sub steal)..."
+                        kubectl -n "$ns" wait --for=delete pod \
+                          -l "app=aegis-warroom,slot=${prev}" \
+                          --timeout=120s 2>/dev/null \
+                          || echo "WARNING: timed out waiting for ${prev} pods (continuing)"
                     '''
                 }
 
@@ -564,6 +571,50 @@ pipeline {
                         --commit "$APP_COMMIT" \
                         --color "$DEPLOY_COLOR" \
                         --url "$AEGIS_API_URL"
+                '''
+            }
+        }
+
+        stage('Auto Fire Demo Incident') {
+            when {
+                expression {
+                    return params.DEPLOY_ENABLED
+                }
+            }
+
+            steps {
+                // After promote + live health: start Fire so judges see agents
+                // run without a manual click (demo path used after CI finishes).
+                sh '''
+                    set -eu
+                    test -n "$AEGIS_API_URL" || {
+                      echo "AEGIS_API_URL empty; skipping auto Fire." >&2
+                      exit 0
+                    }
+                    echo "▶ Auto-firing demo incident at $AEGIS_API_URL/api/demo/fire"
+                    ok=0
+                    for i in $(seq 1 10); do
+                      code=$(curl -sS -o /tmp/aegis-fire.json -w "%{http_code}" \
+                        --max-time 30 \
+                        -X POST "$AEGIS_API_URL/api/demo/fire" \
+                        -H "Content-Type: application/json" \
+                        -d '{}' || true)
+                      if [ "$code" = "200" ]; then
+                        echo "▶ Auto Fire accepted (HTTP $code):"
+                        cat /tmp/aegis-fire.json || true
+                        echo
+                        ok=1
+                        break
+                      fi
+                      echo "  attempt $i/10 — HTTP ${code:-curl-fail}, retrying..."
+                      sleep 3
+                    done
+                    if [ "$ok" -ne 1 ]; then
+                      echo "ERROR: Auto Fire failed after promote" >&2
+                      cat /tmp/aegis-fire.json 2>/dev/null || true
+                      exit 1
+                    fi
+                    echo "▶ Open War Room — incident should already be running: $AEGIS_API_URL"
                 '''
             }
         }
