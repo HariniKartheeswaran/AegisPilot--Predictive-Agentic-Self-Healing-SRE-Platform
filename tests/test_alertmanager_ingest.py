@@ -202,6 +202,33 @@ async def test_process_webhook_critical_suppressed_during_fire_cooldown():
 
 
 @pytest.mark.asyncio
+async def test_resolved_full_alert_counts_without_clearing():
+    bus = AsyncMock()
+    hub = AsyncMock()
+    out = await ami.process_webhook(
+        {
+            "alerts": [
+                {
+                    "status": "resolved",
+                    "labels": {
+                        "alertname": "HighErrorRate",
+                        "app": "payments-svc",
+                        "severity": "critical",
+                        "stage": "full",
+                    },
+                    "fingerprint": "fp-full-res",
+                }
+            ],
+        },
+        bus=bus,
+        hub=hub,
+    )
+    assert out["resolved"] == 1
+    assert out["incidents"] == 0
+    bus.publish.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_process_webhook_ignores_non_dict_and_resolves_pre():
     bus = AsyncMock()
     hub = AsyncMock()
