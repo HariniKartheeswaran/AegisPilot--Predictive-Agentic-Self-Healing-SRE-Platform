@@ -412,6 +412,23 @@ async def rca(incident_id: str, request: Request):
     return {"rca": inc.rca_doc or "", "findings": inc.findings.get("comms", {})}
 
 
+def _is_seed_path(snap) -> bool:
+    return bool(snap) and "backend/seed" in str(snap).replace("\\", "/")
+
+
+def _snapshot_parts(inc):
+    """Pull alert / meta / snap / b64 without nested ternaries (Sonar CC)."""
+    if not inc:
+        return None, {}, None, None
+    alert = getattr(inc, "alert", None)
+    if not alert:
+        return None, {}, None, None
+    meta = getattr(alert, "metadata", None) or {}
+    snap = getattr(alert, "grafana_snapshot", None)
+    b64 = meta.get("grafana_snapshot_b64")
+    return alert, meta, snap, b64
+
+
 def _b64_image_response(b64: str, snap: str | Path | None):
     import base64
 
@@ -434,7 +451,27 @@ def _disk_snapshot_response(snap: str):
 
 def _prefer_live_b64(meta: dict, snap, seed_path: bool) -> bool:
     source = meta.get("snapshot_source")
-    return source in ("prometheus", "grafana-render") or seed_path or not snap
+    if source in ("prometheus", "grafana-render"):
+        return True
+    if seed_path:
+        return True
+    return not snap
+
+
+def _serve_grafana_snapshot(meta: dict, snap, b64: str | None):
+    """Pick disk vs base64 snapshot bytes for the Diagnosis panel."""
+    seed_path = _is_seed_path(snap)
+    if b64 and _prefer_live_b64(meta, snap, seed_path):
+        return _b64_image_response(b64, snap)
+    if snap:
+        use_disk = (not seed_path) or (not b64)
+        if use_disk:
+            file_resp = _disk_snapshot_response(str(snap))
+            if file_resp is not None:
+                return file_resp
+    if b64:
+        return _b64_image_response(b64, snap)
+    return None
 
 
 @app.get("/api/incidents/{incident_id}/grafana")
@@ -445,26 +482,16 @@ async def grafana(incident_id: str, request: Request):
     so a pod recycle does not blank the Diagnosis panel.
     """
     inc = request.app.state.storage.get_incident(incident_id)
-    alert = getattr(inc, "alert", None) if inc else None
-    meta = (getattr(alert, "metadata", None) or {}) if alert else {}
-    snap = getattr(alert, "grafana_snapshot", None) if alert else None
-    b64 = meta.get("grafana_snapshot_b64") if meta else None
-    if not (alert and (snap or b64)):
+    alert, meta, snap, b64 = _snapshot_parts(inc)
+    if alert is None:
+        raise HTTPException(404, "no snapshot for this incident")
+    if not snap and not b64:
         raise HTTPException(404, "no snapshot for this incident")
 
-    seed_path = bool(snap) and ("backend/seed" in str(snap).replace("\\", "/"))
-    if b64 and _prefer_live_b64(meta, snap, seed_path):
-        return _b64_image_response(b64, snap)
-
-    if snap and (not seed_path or not b64):
-        file_resp = _disk_snapshot_response(str(snap))
-        if file_resp is not None:
-            return file_resp
-
-    if b64:
-        return _b64_image_response(b64, snap)
-
-    raise HTTPException(404, "snapshot not available")
+    resp = _serve_grafana_snapshot(meta, snap, b64)
+    if resp is None:
+        raise HTTPException(404, "snapshot not available")
+    return resp
 
 # --------------------------------------------------------------------------- #
 # Human-in-the-loop approval

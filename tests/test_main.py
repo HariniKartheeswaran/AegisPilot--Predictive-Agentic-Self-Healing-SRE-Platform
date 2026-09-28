@@ -395,3 +395,47 @@ async def test_grafana_returns_existing_png_snapshot(tmp_path):
 
     assert result.path == snapshot
     assert result.media_type == "image/png"
+
+
+@pytest.mark.asyncio
+async def test_grafana_prefers_live_b64_over_seed():
+    import base64
+
+    from backend.main import _prefer_live_b64, _snapshot_parts
+
+    png = b"\x89PNG\r\n\x1a\n"
+    b64 = base64.b64encode(png).decode()
+    incident_obj = SimpleNamespace(
+        alert=SimpleNamespace(
+            grafana_snapshot="backend/seed/grafana_checkout_spike.png",
+            metadata={
+                "grafana_snapshot_b64": b64,
+                "snapshot_source": "prometheus",
+            },
+        )
+    )
+    alert, meta, snap, _raw = _snapshot_parts(incident_obj)
+    assert alert is not None
+    assert _prefer_live_b64(meta, snap, True) is True
+
+    storage = SimpleNamespace(get_incident=lambda _id: incident_obj)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(storage=storage)))
+    result = await grafana("inc-b64", request)
+    assert result.body == png
+    assert result.media_type == "image/png"
+
+
+def test_snapshot_parts_empty_incident():
+    from backend.main import _snapshot_parts
+
+    assert _snapshot_parts(None) == (None, {}, None, None)
+    assert _snapshot_parts(SimpleNamespace())[0] is None
+
+
+@pytest.mark.asyncio
+async def test_grafana_404_when_incident_missing():
+    storage = SimpleNamespace(get_incident=lambda _id: None)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(storage=storage)))
+    with pytest.raises(HTTPException) as exc_info:
+        await grafana("missing", request)
+    assert exc_info.value.status_code == 404
