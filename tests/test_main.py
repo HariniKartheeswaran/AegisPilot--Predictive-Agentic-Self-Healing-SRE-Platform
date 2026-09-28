@@ -439,3 +439,43 @@ async def test_grafana_404_when_incident_missing():
     with pytest.raises(HTTPException) as exc_info:
         await grafana("missing", request)
     assert exc_info.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_demo_fire_runs_orchestrator_on_serving_pod(monkeypatch):
+    """Fire must not wait on Pub/Sub pull — same-pod SSE needs local dispatch."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from backend.main import demo_fire
+
+    orch = MagicMock()
+    orch.handle_alert = AsyncMock(return_value=None)
+    bus = MagicMock()
+    bus.publish = AsyncMock()
+    storage = MagicMock()
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(storage=storage, orchestrator=orch, bus=bus))
+    )
+
+    with patch("backend.services.live_fire.live_mode_enabled", return_value=False):
+        with patch(
+            "backend.main.next_scenario",
+            return_value=SimpleNamespace(
+                key="checkout",
+                alert={
+                    "alert": "HighErrorRate",
+                    "service": "checkout-svc",
+                    "error_rate": "42%",
+                },
+            ),
+        ):
+            result = await demo_fire(request)
+
+    assert result["accepted"] is True
+    assert result["service"] == "checkout-svc"
+    bus.publish.assert_not_called()
+    # create_task schedules handle_alert; give the loop a tick
+    import asyncio
+
+    await asyncio.sleep(0)
+    orch.handle_alert.assert_awaited()

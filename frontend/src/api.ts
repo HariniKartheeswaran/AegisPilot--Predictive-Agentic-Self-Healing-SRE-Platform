@@ -58,7 +58,15 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: "{}",
-    }).then(j<{ accepted: boolean; scenario: string; service: string; alert: string }>),
+    }).then(
+      j<{
+        accepted: boolean;
+        scenario: string;
+        service: string;
+        alert: string;
+        live?: boolean;
+      }>
+    ),
 
   // Bring-your-own-incident: judges submit their own data (multipart so they can
   // optionally attach a dashboard screenshot for the vision agent to read).
