@@ -256,6 +256,46 @@ async def _escalate_full_alert(bus, hub, entry, service: str) -> None:
     )
 
 
+async def _process_one_alert(
+    entry: Any,
+    payload: dict[str, Any],
+    *,
+    bus,
+    hub,
+    storage: Any,
+) -> str:
+    """Handle a single AM alert entry. Returns counter key to increment."""
+    if not isinstance(entry, dict):
+        return "ignored"
+
+    labels = entry.get("labels") or {}
+    status = str(entry.get("status") or payload.get("status") or "firing").lower()
+    service = str(
+        labels.get("service") or labels.get("app") or labels.get("job") or "unknown"
+    )
+    fingerprint = str(entry.get("fingerprint") or "")
+    is_pre = _is_pre_alert(labels)
+
+    if status == "resolved":
+        if is_pre:
+            await _handle_resolved_pre(hub, fingerprint, service)
+        return "resolved"
+
+    if is_pre:
+        await _handle_pre_alert(hub, storage, labels, entry, service, fingerprint)
+        return "pre_alerts"
+
+    if _full_suppressed(service) or _has_open_incident(storage, service):
+        log.info(
+            "AM full suppressed for %s (open incident or Fire cooldown)",
+            service,
+        )
+        return "suppressed"
+
+    await _escalate_full_alert(bus, hub, entry, service)
+    return "incidents"
+
+
 async def process_webhook(
     payload: dict[str, Any],
     *,
@@ -267,51 +307,20 @@ async def process_webhook(
 
     Returns counts: pre_alerts, incidents, resolved, ignored, suppressed.
     """
-    alerts = payload.get("alerts") or []
-    pre_n = incident_n = resolved_n = ignored_n = suppressed_n = 0
-
-    for entry in alerts:
-        if not isinstance(entry, dict):
-            ignored_n += 1
-            continue
-        labels = entry.get("labels") or {}
-        status = str(entry.get("status") or payload.get("status") or "firing").lower()
-        service = str(
-            labels.get("service") or labels.get("app") or labels.get("job") or "unknown"
-        )
-        fingerprint = str(entry.get("fingerprint") or "")
-        is_pre = _is_pre_alert(labels)
-
-        if status == "resolved":
-            resolved_n += 1
-            if is_pre:
-                await _handle_resolved_pre(hub, fingerprint, service)
-            continue
-
-        if is_pre:
-            await _handle_pre_alert(hub, storage, labels, entry, service, fingerprint)
-            pre_n += 1
-            continue
-
-        if _full_suppressed(service) or _has_open_incident(storage, service):
-            suppressed_n += 1
-            log.info(
-                "AM full suppressed for %s (open incident or Fire cooldown)",
-                service,
-            )
-            continue
-
-        await _escalate_full_alert(bus, hub, entry, service)
-        incident_n += 1
-
-    return {
-        "accepted": True,
-        "pre_alerts": pre_n,
-        "incidents": incident_n,
-        "resolved": resolved_n,
-        "ignored": ignored_n,
-        "suppressed": suppressed_n,
+    counts = {
+        "pre_alerts": 0,
+        "incidents": 0,
+        "resolved": 0,
+        "ignored": 0,
+        "suppressed": 0,
     }
+    for entry in payload.get("alerts") or []:
+        key = await _process_one_alert(
+            entry, payload, bus=bus, hub=hub, storage=storage
+        )
+        counts[key] += 1
+
+    return {"accepted": True, **counts}
 
 
 def reset_pre_alerts_for_tests() -> None:
