@@ -479,3 +479,115 @@ async def test_demo_fire_runs_orchestrator_on_serving_pod(monkeypatch):
 
     await asyncio.sleep(0)
     orch.handle_alert.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fire_incident_live_mode_dispatches_locally():
+    """Live Fire injects checkout, suppresses AM, warms metrics, same-pod agents."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from backend.main import fire_incident
+    from backend.models import Alert
+
+    orch = MagicMock()
+    orch.handle_alert = AsyncMock(return_value=None)
+    storage = MagicMock()
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(storage=storage, orchestrator=orch, bus=MagicMock()))
+    )
+    alert = Alert(alert="HighErrorRate", service="checkout-svc", error_rate="42%")
+    prepared = {"alert": alert, "load": {"ok": 1, "err": 1, "total": 2}}
+
+    with patch("backend.services.live_fire.live_mode_enabled", return_value=True), patch(
+        "backend.services.live_fire.prepare_live_fire", return_value=prepared
+    ) as prep, patch(
+        "backend.services.alertmanager_ingest.suppress_am_full_for"
+    ) as suppress, patch(
+        "backend.services.live_fire.warm_live_metrics", return_value=None
+    ):
+        result = await fire_incident(request)
+        await asyncio.sleep(0.05)
+
+    assert result["accepted"] is True
+    assert result["live"] is True
+    assert result["warming"] is True
+    assert result["service"] == "checkout-svc"
+    prep.assert_called_once()
+    suppress.assert_called_once_with("checkout-svc", 300.0)
+    orch.handle_alert.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fire_incident_live_prepare_failure_returns_502():
+    from unittest.mock import MagicMock, patch
+
+    from backend.main import fire_incident
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(storage=MagicMock(), orchestrator=MagicMock(), bus=MagicMock())
+        )
+    )
+    with patch("backend.services.live_fire.live_mode_enabled", return_value=True), patch(
+        "backend.services.live_fire.prepare_live_fire", side_effect=RuntimeError("no cluster")
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await fire_incident(request)
+    assert exc.value.status_code == 502
+    assert "Live Fire" in str(exc.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_record_deploy_persists_for_correlation():
+    from unittest.mock import MagicMock
+
+    from backend.main import record_deploy
+
+    storage = MagicMock()
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(storage=storage)))
+    result = await record_deploy(
+        request,
+        service="checkout-svc",
+        version="b3cac1b-74",
+        commit_sha="b3cac1b64b26",
+        deployed_by="jenkins-ci",
+        rollback_target="v1.0.0",
+    )
+    assert result["accepted"] is True
+    assert result["service"] == "checkout-svc"
+    assert result["version"] == "b3cac1b-74"
+    storage.add_deploy.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_custom_incident_ingests_logs_and_dispatches():
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    from backend.main import custom_incident
+
+    orch = MagicMock()
+    orch.handle_alert = AsyncMock(return_value=None)
+    storage = MagicMock()
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(storage=storage, orchestrator=orch))
+    )
+    result = await custom_incident(
+        request,
+        service="payments-svc",
+        alert="HighLatency",
+        error_rate="9%",
+        logs="ERROR payments timeout\nWARN pool saturated\n",
+        deploy_version="v5.5.3",
+        rollback_target="v5.5.2",
+        image=None,
+    )
+    await asyncio.sleep(0)
+    assert result["accepted"] is True
+    assert result["service"] == "payments-svc"
+    assert result["logs_ingested"] == 2
+    assert result["deploy"] is True
+    assert storage.add_log.call_count == 2
+    storage.add_deploy.assert_called_once()
+    orch.handle_alert.assert_awaited()
