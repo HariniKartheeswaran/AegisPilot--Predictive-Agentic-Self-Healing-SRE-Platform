@@ -111,7 +111,9 @@ pipeline {
 
                     export PIP_DEFAULT_TIMEOUT=120
                     export PIP_RETRIES=5
+                    export PYTHONUNBUFFERED=1
 
+                    echo "▶ Upgrading pip..."
                     python -m pip install --upgrade pip
 
                     # Retry pip on transient PyPI / network timeouts (seen on Jenkins agents).
@@ -127,7 +129,9 @@ pipeline {
                       sleep 15
                     done
 
+                    echo "▶ Installing test tools..."
                     python -m pip install pytest pytest-cov pytest-asyncio flake8 httpx ruff
+                    echo "▶ Dependencies ready."
                 '''
             }
         }
