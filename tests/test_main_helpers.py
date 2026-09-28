@@ -87,3 +87,50 @@ def test_seed_if_needed_skips_when_agents_present():
     with patch("backend.main.seed_all") as seed:
         _seed_if_needed(storage, settings)
         seed.assert_not_called()
+
+
+def test_prefer_live_b64_seed_and_empty_snap():
+    from backend.main import _prefer_live_b64
+
+    assert _prefer_live_b64({}, None, seed_path=True) is True
+    assert _prefer_live_b64({}, None, seed_path=False) is True
+    assert _prefer_live_b64({"snapshot_source": "other"}, "live.png", False) is False
+    assert _prefer_live_b64({"snapshot_source": "grafana-render"}, "x", False) is True
+
+
+def test_disk_snapshot_response_relative_and_missing(tmp_path, monkeypatch):
+    from backend import main as main_mod
+
+    seed = tmp_path / "backend" / "seed"
+    seed.mkdir(parents=True)
+    monkeypatch.setattr(main_mod, "SEED_DIR", seed)
+    # relative path resolves against repo root (= SEED_DIR.parent.parent)
+    shot = tmp_path / "live.png"
+    shot.write_bytes(b"png")
+    assert main_mod._disk_snapshot_response("live.png") is not None
+    assert main_mod._disk_snapshot_response("nope-missing.png") is None
+
+
+def test_serve_grafana_snapshot_disk_then_b64_fallback(tmp_path):
+    import base64
+
+    from backend.main import _serve_grafana_snapshot
+
+    shot = tmp_path / "dash.png"
+    shot.write_bytes(b"disk-bytes")
+    resp = _serve_grafana_snapshot({}, str(shot), None)
+    assert resp is not None
+    assert resp.path == shot
+
+    raw = b"\x89PNG-fallback"
+    b64 = base64.b64encode(raw).decode()
+    # non-seed missing file → disk miss → b64 branch (line that was uncovered)
+    resp2 = _serve_grafana_snapshot({}, str(tmp_path / "gone.png"), b64)
+    assert resp2 is not None
+    assert resp2.body == raw
+
+
+def test_serve_grafana_snapshot_none():
+    from backend.main import _serve_grafana_snapshot
+
+    assert _serve_grafana_snapshot({}, None, None) is None
