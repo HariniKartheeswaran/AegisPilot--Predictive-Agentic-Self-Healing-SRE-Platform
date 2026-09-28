@@ -50,11 +50,10 @@ export const api = {
       body: JSON.stringify({ approver, note }),
     }).then(j<{ resolved: boolean; approved: boolean }>),
 
-  // Fire the NEXT rotating scenario (checkout → cart → payments). We send an
-  // explicit empty body so Cloud Run's front-end always gets a Content-Length
-  // (a bodyless POST can be rejected with 411).
+  // One-click Fire Incident (live K8s inject on checkout-svc, or seed offline).
+  // Same War Room host as the UI — path is /api/fire, not a different product.
   fireDemoAlert: () =>
-    fetch("/api/demo/fire", {
+    fetch("/api/fire", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: "{}",

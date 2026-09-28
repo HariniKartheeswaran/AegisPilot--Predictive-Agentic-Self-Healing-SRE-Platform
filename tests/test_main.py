@@ -446,7 +446,7 @@ async def test_demo_fire_runs_orchestrator_on_serving_pod(monkeypatch):
     """Fire must not wait on Pub/Sub pull — same-pod SSE needs local dispatch."""
     from unittest.mock import AsyncMock, MagicMock, patch
 
-    from backend.main import demo_fire
+    from backend.main import fire_incident
 
     orch = MagicMock()
     orch.handle_alert = AsyncMock(return_value=None)
@@ -469,7 +469,7 @@ async def test_demo_fire_runs_orchestrator_on_serving_pod(monkeypatch):
                 },
             ),
         ):
-            result = await demo_fire(request)
+            result = await fire_incident(request)
 
     assert result["accepted"] is True
     assert result["service"] == "checkout-svc"

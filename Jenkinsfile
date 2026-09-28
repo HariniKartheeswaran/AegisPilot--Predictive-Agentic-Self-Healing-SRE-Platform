@@ -1,12 +1,11 @@
-
 // =============================================================================
-// AegisPilot / Aegisops — Production Declarative Jenkinsfile
+// AegisPilot — Declarative Jenkinsfile (aligned with team jenkins-pipeline layout)
 //
-// CI/CD lifecycle:
-// source checkout -> dependencies -> tests -> coverage -> static analysis ->
-// optional SonarQube quality gate -> immutable image -> ECR -> blue/green
-// Kubernetes deployment -> candidate smoke test -> manual promotion ->
-// active-service smoke test -> deployment metadata.
+// Blue Ocean groups (same shape as feature/jenkins-pipeline):
+//   01 Source → 02 Quality → 03 Build → 04 K8s Deploy → 05 Release
+//
+// Extra hardening kept on top of that layout:
+//   promote endpoint wait, external War Room health, auto Fire after promote.
 // =============================================================================
 
 pipeline {
@@ -34,6 +33,8 @@ pipeline {
     }
 
     environment {
+        // APP_NAME = War Room *app* Jenkins deploys (metadata / Correlation).
+        // Live Fire injects ERROR_RATE on checkout-svc — that is the incident service in the UI.
         APP_NAME = 'aegis-warroom'
         NAMESPACE = 'aegispilot'
 
@@ -53,7 +54,6 @@ pipeline {
         SONAR_SERVER = 'team3-sonar'
         REPORTS_DIR = 'reports'
 
-        // Configure this in Jenkins for live deployment metadata publication.
         AEGIS_API_URL = "${env.AEGIS_API_URL ?: ''}"
     }
 
@@ -65,557 +65,534 @@ pipeline {
 
     stages {
 
-        stage('Checkout') {
-            steps {
-                echo "▶ Checking out application source..."
-                checkout scm
-            }
-        }
-
-        stage('Environment / Version') {
-            steps {
-                script {
-                    def commit = sh(
-                        returnStdout: true,
-                        script: 'git rev-parse HEAD'
-                    ).trim()
-
-                    env.APP_COMMIT = commit
-                    env.IMAGE_TAG = "${commit.take(7)}-${env.BUILD_NUMBER}"
-                    env.IMAGE = "${env.ECR_REGISTRY}/${env.ECR_REPOSITORY}:${env.IMAGE_TAG}"
-                    env.TRAFFIC_PROMOTED = 'false'
-                }
-
-                echo "============================================================"
-                echo "▶ Application Commit : ${env.APP_COMMIT}"
-                echo "▶ Build Version      : ${env.IMAGE_TAG}"
-                echo "▶ Target Service     : ${env.APP_NAME}"
-                echo "▶ Namespace          : ${env.NAMESPACE}"
-                echo "▶ Target Image       : ${env.IMAGE}"
-                echo "============================================================"
-
-                sh 'mkdir -p reports'
-            }
-        }
-
-        stage('Install Dependencies') {
-            steps {
-                echo "▶ Preparing isolated Python build environment..."
-
-                sh '''
-                    set -eu
-
-                    python3 -m venv .venv || python -m venv .venv
-
-                    . .venv/bin/activate || . .venv/Scripts/activate
-
-                    export PIP_DEFAULT_TIMEOUT=120
-                    export PIP_RETRIES=5
-                    export PYTHONUNBUFFERED=1
-
-                    echo "▶ Upgrading pip..."
-                    python -m pip install --upgrade pip
-
-                    # Retry pip on transient PyPI / network timeouts (seen on Jenkins agents).
-                    attempt=1
-                    max_attempts=3
-                    until python -m pip install -r backend/requirements.txt; do
-                      if [ "$attempt" -ge "$max_attempts" ]; then
-                        echo "pip install failed after ${max_attempts} attempts"
-                        exit 1
-                      fi
-                      echo "pip install attempt ${attempt} failed; retrying in 15s..."
-                      attempt=$((attempt + 1))
-                      sleep 15
-                    done
-
-                    echo "▶ Installing test tools..."
-                    python -m pip install pytest pytest-cov pytest-asyncio flake8 httpx ruff
-                    echo "▶ Dependencies ready."
-                '''
-            }
-        }
-
-        stage('Unit Tests') {
-            steps {
-                echo "▶ Running unit tests with JUnit XML reporting..."
-
-                sh '''
-                    set -eu
-
-                    . .venv/bin/activate || . .venv/Scripts/activate
-
-                    python -m pytest tests/ \
-                        -q \
-                        --junitxml=reports/junit.xml
-                '''
-            }
-        }
-
-        stage('Coverage Gate') {
-            steps {
-                echo "▶ Enforcing minimum test coverage threshold (>= 85%)..."
-
-                sh '''
-                    set -eu
-
-                    . .venv/bin/activate || . .venv/Scripts/activate
-
-                    python -m pytest tests/ \
-                        --cov=backend \
-                        --cov-report=xml:reports/coverage.xml \
-                        --cov-report=term \
-                        --cov-fail-under=85 \
-                        --cov-config=.coveragerc
-                '''
-            }
-        }
-
-        stage('Static Analysis (Ruff)') {
-            steps {
-                echo "▶ Running Python static code analysis with Ruff..."
-
-                sh '''
-                    set -eu
-
-                    . .venv/bin/activate || . .venv/Scripts/activate
-
-                    ruff check backend --select F
-                '''
-            }
-        }
-
-        stage('SonarQube Quality Gate') {
-            when {
-                expression {
-                    return params.RUN_SONAR
-                }
-            }
-
-            steps {
-                echo "▶ Running SonarQube Scanner analysis..."
-
-                script {
-                    def scannerHome = tool 'SonarScanner'
-
-                    withSonarQubeEnv(env.SONAR_SERVER) {
-                        withEnv([
-                            "SONAR_SCANNER_HOME=${scannerHome}",
-                            "PATH+SONAR=${scannerHome}/bin"
-                        ]) {
-                            sh './scripts/run_sonar.sh'
-                        }
+        stage('01 - Source') {
+            stages {
+                stage('Checkout') {
+                    steps {
+                        echo "▶ Checking out application source..."
+                        checkout scm
                     }
                 }
 
-                timeout(time: 10, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
-                }
-            }
-        }
+                stage('Environment / Version') {
+                    steps {
+                        script {
+                            def commit = sh(
+                                returnStdout: true,
+                                script: 'git rev-parse HEAD'
+                            ).trim()
 
-        stage('Checkout Pinned Kubernetes Assets') {
-            when {
-                expression {
-                    return params.DEPLOY_ENABLED
-                }
-            }
-
-            steps {
-                dir(env.K8S_ASSETS_DIR) {
-                    checkout([
-                        $class: 'GitSCM',
-                        branches: [[name: params.K8S_COMMIT]],
-                        doGenerateSubmoduleConfigurations: false,
-                        extensions: [
-                            [$class: 'CleanBeforeCheckout']
-                        ],
-                        userRemoteConfigs: [[
-                            url: 'https://github.com/HariniKartheeswaran/AegisPilot--Predictive-Agentic-Self-Healing-SRE-Platform.git'
-                        ]]
-                    ])
-
-                    script {
-                        def resolved = sh(
-                            returnStdout: true,
-                            script: 'git rev-parse HEAD'
-                        ).trim()
-
-                        if (resolved != params.K8S_COMMIT) {
-                            error(
-                                "Kubernetes checkout resolved ${resolved}, expected ${params.K8S_COMMIT}"
-                            )
+                            env.APP_COMMIT = commit
+                            env.IMAGE_TAG = "${commit.take(7)}-${env.BUILD_NUMBER}"
+                            env.IMAGE = "${env.ECR_REGISTRY}/${env.ECR_REPOSITORY}:${env.IMAGE_TAG}"
+                            env.TRAFFIC_PROMOTED = 'false'
                         }
+
+                        echo "============================================================"
+                        echo "▶ Application Commit : ${env.APP_COMMIT}"
+                        echo "▶ Build Version      : ${env.IMAGE_TAG}"
+                        echo "▶ Deployed app name  : ${env.APP_NAME} (War Room)"
+                        echo "▶ Fire target svc    : checkout-svc (live inject — not aegis-warroom)"
+                        echo "▶ Namespace          : ${env.NAMESPACE}"
+                        echo "▶ Target Image       : ${env.IMAGE}"
+                        echo "============================================================"
+
+                        sh 'mkdir -p reports'
                     }
                 }
-
-                echo "▶ Kubernetes assets pinned to ${params.K8S_COMMIT}"
             }
         }
 
-        stage('Build and Push Image to ECR') {
-            when {
-                expression {
-                    return params.DEPLOY_ENABLED
-                }
-            }
+        stage('02 - Quality Assurance') {
+            stages {
+                stage('Install Dependencies') {
+                    steps {
+                        echo "▶ Preparing isolated Python build environment..."
 
-            steps {
-                echo "▶ Building immutable image ${env.IMAGE}..."
-
-                sh '''
-                    set -eu
-
-                    command -v aws >/dev/null
-                    command -v docker >/dev/null
-
-                    echo "▶ Checking AWS identity..."
-                    aws sts get-caller-identity
-
-                    echo "▶ Checking ECR access..."
-                    aws ecr get-login-password --region "$ECR_REGION" \
-                      | docker login \
-                          --username AWS \
-                          --password-stdin "$ECR_REGISTRY"
-
-                    docker build \
-                      -f docker/Dockerfile \
-                      -t "$IMAGE" \
-                      .
-
-                    docker push "$IMAGE"
-                '''
-            }
-        }
-
-        stage('Prepare Kubernetes and Select Candidate') {
-            when {
-                expression {
-                    return params.DEPLOY_ENABLED
-                }
-            }
-
-            steps {
-                withCredentials([
-                    file(
-                        credentialsId: env.KUBECONFIG_CREDENTIALS_ID,
-                        variable: 'KUBECONFIG'
-                    )
-                ]) {
-                    script {
                         sh '''
                             set -eu
 
-                            command -v kubectl >/dev/null
+                            python3 -m venv .venv || python -m venv .venv
 
-                            test -f "$K8S_ASSETS_DIR/k8s/namespace.yaml"
-                            test -f "$K8S_ASSETS_DIR/$K8S_MANIFEST_DIR/configmap.yaml"
-                            test -f "$K8S_ASSETS_DIR/$K8S_MANIFEST_DIR/service.yaml"
+                            . .venv/bin/activate || . .venv/Scripts/activate
 
-                            kubectl apply \
-                              -f "$K8S_ASSETS_DIR/k8s/namespace.yaml"
+                            export PIP_DEFAULT_TIMEOUT=120
+                            export PIP_RETRIES=5
+                            export PYTHONUNBUFFERED=1
 
-                            kubectl apply \
-                              -f "$K8S_ASSETS_DIR/$K8S_MANIFEST_DIR/configmap.yaml"
+                            echo "▶ Upgrading pip..."
+                            python -m pip install --upgrade pip
 
-                            kubectl apply \
-                              -f "$K8S_ASSETS_DIR/$K8S_MANIFEST_DIR/serviceaccount.yaml"
+                            attempt=1
+                            max_attempts=3
+                            until python -m pip install -r backend/requirements.txt; do
+                              if [ "$attempt" -ge "$max_attempts" ]; then
+                                echo "pip install failed after ${max_attempts} attempts"
+                                exit 1
+                              fi
+                              echo "pip install attempt ${attempt} failed; retrying in 15s..."
+                              attempt=$((attempt + 1))
+                              sleep 15
+                            done
 
-                            kubectl apply \
-                              -f "$K8S_ASSETS_DIR/$K8S_MANIFEST_DIR/rbac.yaml"
-
-                            if kubectl -n "$NAMESPACE" get service "$ACTIVE_SERVICE" >/dev/null 2>&1; then
-                                echo "▶ Existing service $ACTIVE_SERVICE found; preserving its current selector."
-                            else
-                                echo "▶ Service $ACTIVE_SERVICE does not exist; creating it from the reviewed manifest."
-                                kubectl apply \
-                                  -f "$K8S_ASSETS_DIR/$K8S_MANIFEST_DIR/service.yaml"
-                            fi
-
-                            kubectl apply \
-                              -f "$K8S_ASSETS_DIR/$K8S_MANIFEST_DIR/ingress.yaml"
-
-                            kubectl -n "$NAMESPACE" get secret ecr-pull >/dev/null
-                            kubectl -n "$NAMESPACE" get secret aegis-warroom-secrets >/dev/null
+                            echo "▶ Installing test tools..."
+                            python -m pip install pytest pytest-cov pytest-asyncio flake8 httpx ruff
+                            echo "▶ Dependencies ready."
                         '''
+                    }
+                }
 
-                        def active = sh(
-                            returnStdout: true,
-                            script: '''
-                                kubectl -n "$NAMESPACE" \
-                                  get service "$ACTIVE_SERVICE" \
-                                  -o jsonpath="{.spec.selector.slot}"
-                            '''
-                        ).trim()
+                stage('Unit Tests') {
+                    steps {
+                        echo "▶ Running unit tests with JUnit XML reporting..."
 
-                        if (active != 'blue' && active != 'green') {
-                            error(
-                                "${env.ACTIVE_SERVICE} has no valid blue/green selector " +
-                                "(found: '${active}')"
-                            )
+                        sh '''
+                            set -eu
+                            . .venv/bin/activate || . .venv/Scripts/activate
+                            python -m pytest tests/ -q --junitxml=reports/junit.xml
+                        '''
+                    }
+                }
+
+                stage('Coverage Gate') {
+                    steps {
+                        echo "▶ Enforcing minimum test coverage threshold (>= 85%)..."
+
+                        sh '''
+                            set -eu
+                            . .venv/bin/activate || . .venv/Scripts/activate
+                            python -m pytest tests/ \
+                                --cov=backend \
+                                --cov-report=xml:reports/coverage.xml \
+                                --cov-report=term \
+                                --cov-fail-under=85 \
+                                --cov-config=.coveragerc
+                        '''
+                    }
+                }
+
+                stage('Static Analysis (Ruff)') {
+                    steps {
+                        echo "▶ Running Python static code analysis with Ruff..."
+
+                        sh '''
+                            set -eu
+                            . .venv/bin/activate || . .venv/Scripts/activate
+                            ruff check backend --select F
+                        '''
+                    }
+                }
+
+                stage('SonarQube Quality Gate') {
+                    when {
+                        expression {
+                            return params.RUN_SONAR
+                        }
+                    }
+
+                    steps {
+                        echo "▶ Running SonarQube Scanner analysis..."
+
+                        script {
+                            def scannerHome = tool 'SonarScanner'
+
+                            withSonarQubeEnv(env.SONAR_SERVER) {
+                                withEnv([
+                                    "SONAR_SCANNER_HOME=${scannerHome}",
+                                    "PATH+SONAR=${scannerHome}/bin"
+                                ]) {
+                                    sh './scripts/run_sonar.sh'
+                                }
+                            }
                         }
 
-                        env.ACTIVE_COLOR = active
-                        env.DEPLOY_COLOR = active == 'blue' ? 'green' : 'blue'
-                        env.TARGET_DEPLOYMENT =
-                            env.DEPLOY_COLOR == 'blue'
-                                ? env.BLUE_DEPLOYMENT
-                                : env.GREEN_DEPLOYMENT
+                        timeout(time: 10, unit: 'MINUTES') {
+                            waitForQualityGate abortPipeline: true
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('03 - Build & Package') {
+            when {
+                expression {
+                    return params.DEPLOY_ENABLED
+                }
+            }
+
+            stages {
+                stage('Checkout Pinned Kubernetes Assets') {
+                    steps {
+                        dir(env.K8S_ASSETS_DIR) {
+                            checkout([
+                                $class: 'GitSCM',
+                                branches: [[name: params.K8S_COMMIT]],
+                                doGenerateSubmoduleConfigurations: false,
+                                extensions: [
+                                    [$class: 'CleanBeforeCheckout']
+                                ],
+                                userRemoteConfigs: [[
+                                    url: 'https://github.com/HariniKartheeswaran/AegisPilot--Predictive-Agentic-Self-Healing-SRE-Platform.git'
+                                ]]
+                            ])
+
+                            script {
+                                def resolved = sh(
+                                    returnStdout: true,
+                                    script: 'git rev-parse HEAD'
+                                ).trim()
+
+                                if (resolved != params.K8S_COMMIT) {
+                                    error(
+                                        "Kubernetes checkout resolved ${resolved}, expected ${params.K8S_COMMIT}"
+                                    )
+                                }
+                            }
+                        }
+
+                        echo "▶ Kubernetes assets pinned to ${params.K8S_COMMIT}"
                     }
                 }
 
-                echo "▶ Active slot: ${env.ACTIVE_COLOR}"
-                echo "▶ Candidate slot: ${env.DEPLOY_COLOR}"
-                echo "▶ Candidate deployment: ${env.TARGET_DEPLOYMENT}"
-            }
-        }
+                stage('Build and Push Image to ECR') {
+                    steps {
+                        echo "▶ Building immutable image ${env.IMAGE}..."
 
-        stage('Deploy and Verify Candidate') {
-            when {
-                expression {
-                    return params.DEPLOY_ENABLED
-                }
-            }
+                        sh '''
+                            set -eu
 
-            steps {
-                withCredentials([
-                    file(
-                        credentialsId: env.KUBECONFIG_CREDENTIALS_ID,
-                        variable: 'KUBECONFIG'
-                    )
-                ]) {
-                    sh '''
-                        set -eu
+                            command -v aws >/dev/null
+                            command -v docker >/dev/null
 
-                        kubectl -n "$NAMESPACE" apply \
-                          -f "$K8S_ASSETS_DIR/$K8S_MANIFEST_DIR/deployment-${DEPLOY_COLOR}.yaml"
+                            echo "▶ Checking AWS identity..."
+                            aws sts get-caller-identity
 
-                        kubectl -n "$NAMESPACE" set image \
-                          "deployment/${TARGET_DEPLOYMENT}" \
-                          warroom="$IMAGE"
+                            echo "▶ Checking ECR access..."
+                            aws ecr get-login-password --region "$ECR_REGION" \
+                              | docker login \
+                                  --username AWS \
+                                  --password-stdin "$ECR_REGISTRY"
 
-                        kubectl -n "$NAMESPACE" annotate \
-                          "deployment/${TARGET_DEPLOYMENT}" \
-                          image.tag="$IMAGE_TAG" \
-                          --overwrite
+                            docker build \
+                              -f docker/Dockerfile \
+                              -t "$IMAGE" \
+                              .
 
-                        kubectl -n "$NAMESPACE" rollout status \
-                          "deployment/${TARGET_DEPLOYMENT}" \
-                          --timeout=180s
-                    '''
-                }
-            }
-        }
-
-        stage('Smoke Test Candidate') {
-            when {
-                expression {
-                    return params.DEPLOY_ENABLED
-                }
-            }
-
-            steps {
-                withCredentials([
-                    file(
-                        credentialsId: env.KUBECONFIG_CREDENTIALS_ID,
-                        variable: 'KUBECONFIG'
-                    )
-                ]) {
-                    sh 'bash scripts/k8s_candidate_smoke.sh'
-                }
-            }
-        }
-
-        stage('Approve Traffic Promotion') {
-            when {
-                expression {
-                    return params.DEPLOY_ENABLED
-                }
-            }
-
-            steps {
-                timeout(time: 30, unit: 'MINUTES') {
-                    input(
-                        message: "Candidate ${env.DEPLOY_COLOR} passed smoke checks. Promote ${env.ACTIVE_SERVICE}?",
-                        ok: 'Promote traffic'
-                    )
-                }
-            }
-        }
-
-        stage('Promote Candidate') {
-            when {
-                expression {
-                    return params.DEPLOY_ENABLED
-                }
-            }
-
-            steps {
-                withCredentials([
-                    file(
-                        credentialsId: env.KUBECONFIG_CREDENTIALS_ID,
-                        variable: 'KUBECONFIG'
-                    )
-                ]) {
-                    sh 'bash "$K8S_ASSETS_DIR/scripts/k8s_promote.sh"'
-
-                    // Guarantee traffic is on the candidate before judges open the UI.
-                    sh '''
-                        set -eu
-                        ns="${K8S_NAMESPACE:-aegispilot}"
-                        svc="${ACTIVE_SERVICE:-aegis-warroom}"
-                        slot="${DEPLOY_COLOR}"
-                        # Opposite of candidate = previous slot that was scaled to 0.
-                        if [ "$slot" = "blue" ]; then prev=green; else prev=blue; fi
-                        echo "▶ Confirming Service endpoints for slot=${slot}..."
-                        ready=0
-                        for i in $(seq 1 30); do
-                          ep=$(kubectl -n "$ns" get endpoints "$svc" -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null || true)
-                          pod_ip=$(kubectl -n "$ns" get pods -l "app=aegis-warroom,slot=${slot}" \
-                            -o jsonpath='{.items[0].status.podIP}' 2>/dev/null || true)
-                          if [ -n "$ep" ] && [ -n "$pod_ip" ] && echo "$ep" | grep -q "$pod_ip"; then
-                            echo "▶ Endpoints ready: $ep (pod $pod_ip)"
-                            ready=1
-                            break
-                          fi
-                          echo "  attempt $i/30 — endpoints='$ep' pod_ip='$pod_ip'"
-                          sleep 2
-                        done
-                        if [ "$ready" -ne 1 ]; then
-                          echo "ERROR: Service $svc has no ready endpoints for slot=$slot" >&2
-                          kubectl -n "$ns" get endpoints "$svc" -o wide || true
-                          kubectl -n "$ns" get pods -l app=aegis-warroom -o wide || true
-                          exit 1
-                        fi
-                        echo "▶ Waiting for previous slot ${prev} pods to terminate (no Pub/Sub steal)..."
-                        kubectl -n "$ns" wait --for=delete pod \
-                          -l "app=aegis-warroom,slot=${prev}" \
-                          --timeout=120s 2>/dev/null \
-                          || echo "WARNING: timed out waiting for ${prev} pods (continuing)"
-                    '''
-                }
-
-                script {
-                    env.TRAFFIC_PROMOTED = 'true'
-                }
-            }
-        }
-
-        stage('Smoke Test Active Service') {
-            when {
-                expression {
-                    return params.DEPLOY_ENABLED
-                }
-            }
-
-            steps {
-                withCredentials([
-                    file(
-                        credentialsId: env.KUBECONFIG_CREDENTIALS_ID,
-                        variable: 'KUBECONFIG'
-                    )
-                ]) {
-                    sh 'bash "$K8S_ASSETS_DIR/scripts/k8s_smoke.sh"'
-                }
-
-                // External URL the judges open — must answer after promote (not only in-pod smoke).
-                sh '''
-                    set -eu
-                    test -n "$AEGIS_API_URL" || {
-                      echo "AEGIS_API_URL is empty; skipping external War Room readiness check." >&2
-                      exit 0
+                            docker push "$IMAGE"
+                        '''
                     }
-                    echo "▶ Waiting for external War Room: $AEGIS_API_URL/api/health"
-                    ok=0
-                    for i in $(seq 1 30); do
-                      if curl -sf --max-time 5 "$AEGIS_API_URL/api/health" | grep -qi '"status"[[:space:]]*:[[:space:]]*"ok"'; then
-                        echo "▶ War Room is LIVE for judges: $AEGIS_API_URL"
-                        curl -sf --max-time 5 "$AEGIS_API_URL/api/health" || true
-                        ok=1
-                        break
-                      fi
-                      echo "  attempt $i/30 — not ready yet..."
-                      sleep 3
-                    done
-                    if [ "$ok" -ne 1 ]; then
-                      echo "ERROR: War Room did not become ready at $AEGIS_API_URL/api/health" >&2
-                      exit 1
-                    fi
-                '''
+                }
             }
         }
 
-        stage('Publish Deploy Metadata') {
+        stage('04 - Kubernetes Deployment') {
             when {
                 expression {
                     return params.DEPLOY_ENABLED
                 }
             }
 
-            steps {
-                echo "▶ Publishing deployment metadata to AegisPilot Correlation Agent..."
+            stages {
+                stage('Prepare Kubernetes and Select Candidate') {
+                    steps {
+                        withCredentials([
+                            file(
+                                credentialsId: env.KUBECONFIG_CREDENTIALS_ID,
+                                variable: 'KUBECONFIG'
+                            )
+                        ]) {
+                            script {
+                                sh '''
+                                    set -eu
 
-                sh '''
-                    set -eu
+                                    command -v kubectl >/dev/null
 
-                    . .venv/bin/activate || . .venv/Scripts/activate
+                                    test -f "$K8S_ASSETS_DIR/k8s/namespace.yaml"
+                                    test -f "$K8S_ASSETS_DIR/$K8S_MANIFEST_DIR/configmap.yaml"
+                                    test -f "$K8S_ASSETS_DIR/$K8S_MANIFEST_DIR/service.yaml"
 
-                    test -n "$AEGIS_API_URL" || {
-                        echo "AEGIS_API_URL must be configured in Jenkins for live deployment metadata." >&2
-                        exit 1
+                                    kubectl apply \
+                                      -f "$K8S_ASSETS_DIR/k8s/namespace.yaml"
+
+                                    kubectl apply \
+                                      -f "$K8S_ASSETS_DIR/$K8S_MANIFEST_DIR/configmap.yaml"
+
+                                    kubectl apply \
+                                      -f "$K8S_ASSETS_DIR/$K8S_MANIFEST_DIR/serviceaccount.yaml"
+
+                                    kubectl apply \
+                                      -f "$K8S_ASSETS_DIR/$K8S_MANIFEST_DIR/rbac.yaml"
+
+                                    if kubectl -n "$NAMESPACE" get service "$ACTIVE_SERVICE" >/dev/null 2>&1; then
+                                        echo "▶ Existing service $ACTIVE_SERVICE found; preserving its current selector."
+                                    else
+                                        echo "▶ Service $ACTIVE_SERVICE does not exist; creating it from the reviewed manifest."
+                                        kubectl apply \
+                                          -f "$K8S_ASSETS_DIR/$K8S_MANIFEST_DIR/service.yaml"
+                                    fi
+
+                                    kubectl apply \
+                                      -f "$K8S_ASSETS_DIR/$K8S_MANIFEST_DIR/ingress.yaml"
+
+                                    kubectl -n "$NAMESPACE" get secret ecr-pull >/dev/null
+                                    kubectl -n "$NAMESPACE" get secret aegis-warroom-secrets >/dev/null
+                                '''
+
+                                def active = sh(
+                                    returnStdout: true,
+                                    script: '''
+                                        kubectl -n "$NAMESPACE" \
+                                          get service "$ACTIVE_SERVICE" \
+                                          -o jsonpath="{.spec.selector.slot}"
+                                    '''
+                                ).trim()
+
+                                if (active != 'blue' && active != 'green') {
+                                    error(
+                                        "${env.ACTIVE_SERVICE} has no valid blue/green selector " +
+                                        "(found: '${active}')"
+                                    )
+                                }
+
+                                env.ACTIVE_COLOR = active
+                                env.DEPLOY_COLOR = active == 'blue' ? 'green' : 'blue'
+                                env.TARGET_DEPLOYMENT =
+                                    env.DEPLOY_COLOR == 'blue'
+                                        ? env.BLUE_DEPLOYMENT
+                                        : env.GREEN_DEPLOYMENT
+                            }
+                        }
+
+                        echo "▶ Active slot: ${env.ACTIVE_COLOR}"
+                        echo "▶ Candidate slot: ${env.DEPLOY_COLOR}"
+                        echo "▶ Candidate deployment: ${env.TARGET_DEPLOYMENT}"
                     }
+                }
 
-                    python scripts/publish_deploy_metadata.py \
-                        --service "$APP_NAME" \
-                        --version "$IMAGE_TAG" \
-                        --commit "$APP_COMMIT" \
-                        --color "$DEPLOY_COLOR" \
-                        --url "$AEGIS_API_URL"
-                '''
+                stage('Deploy and Verify Candidate') {
+                    steps {
+                        withCredentials([
+                            file(
+                                credentialsId: env.KUBECONFIG_CREDENTIALS_ID,
+                                variable: 'KUBECONFIG'
+                            )
+                        ]) {
+                            sh '''
+                                set -eu
+
+                                kubectl -n "$NAMESPACE" apply \
+                                  -f "$K8S_ASSETS_DIR/$K8S_MANIFEST_DIR/deployment-${DEPLOY_COLOR}.yaml"
+
+                                kubectl -n "$NAMESPACE" set image \
+                                  "deployment/${TARGET_DEPLOYMENT}" \
+                                  warroom="$IMAGE"
+
+                                kubectl -n "$NAMESPACE" annotate \
+                                  "deployment/${TARGET_DEPLOYMENT}" \
+                                  image.tag="$IMAGE_TAG" \
+                                  --overwrite
+
+                                kubectl -n "$NAMESPACE" rollout status \
+                                  "deployment/${TARGET_DEPLOYMENT}" \
+                                  --timeout=180s
+                            '''
+                        }
+                    }
+                }
+
+                stage('Smoke Test Candidate') {
+                    steps {
+                        withCredentials([
+                            file(
+                                credentialsId: env.KUBECONFIG_CREDENTIALS_ID,
+                                variable: 'KUBECONFIG'
+                            )
+                        ]) {
+                            sh 'bash scripts/k8s_candidate_smoke.sh'
+                        }
+                    }
+                }
             }
         }
 
-        stage('Auto Fire Demo Incident') {
+        stage('05 - Release & Verification') {
             when {
                 expression {
                     return params.DEPLOY_ENABLED
                 }
             }
 
-            steps {
-                // After promote + live health: start Fire so judges see agents
-                // run without a manual click (demo path used after CI finishes).
-                sh '''
-                    set -eu
-                    test -n "$AEGIS_API_URL" || {
-                      echo "AEGIS_API_URL empty; skipping auto Fire." >&2
-                      exit 0
+            stages {
+                stage('Approve Traffic Promotion') {
+                    steps {
+                        timeout(time: 30, unit: 'MINUTES') {
+                            input(
+                                message: "Candidate ${env.DEPLOY_COLOR} passed smoke checks. Promote ${env.ACTIVE_SERVICE}?",
+                                ok: 'Promote traffic'
+                            )
+                        }
                     }
-                    echo "▶ Auto-firing demo incident at $AEGIS_API_URL/api/demo/fire"
-                    ok=0
-                    for i in $(seq 1 10); do
-                      code=$(curl -sS -o /tmp/aegis-fire.json -w "%{http_code}" \
-                        --max-time 30 \
-                        -X POST "$AEGIS_API_URL/api/demo/fire" \
-                        -H "Content-Type: application/json" \
-                        -d '{}' || true)
-                      if [ "$code" = "200" ]; then
-                        echo "▶ Auto Fire accepted (HTTP $code):"
-                        cat /tmp/aegis-fire.json || true
-                        echo
-                        ok=1
-                        break
-                      fi
-                      echo "  attempt $i/10 — HTTP ${code:-curl-fail}, retrying..."
-                      sleep 3
-                    done
-                    if [ "$ok" -ne 1 ]; then
-                      echo "ERROR: Auto Fire failed after promote" >&2
-                      cat /tmp/aegis-fire.json 2>/dev/null || true
-                      exit 1
-                    fi
-                    echo "▶ Open War Room — incident should already be running: $AEGIS_API_URL"
-                '''
+                }
+
+                stage('Promote Candidate') {
+                    steps {
+                        withCredentials([
+                            file(
+                                credentialsId: env.KUBECONFIG_CREDENTIALS_ID,
+                                variable: 'KUBECONFIG'
+                            )
+                        ]) {
+                            sh 'bash "$K8S_ASSETS_DIR/scripts/k8s_promote.sh"'
+
+                            sh '''
+                                set -eu
+                                ns="${K8S_NAMESPACE:-aegispilot}"
+                                svc="${ACTIVE_SERVICE:-aegis-warroom}"
+                                slot="${DEPLOY_COLOR}"
+                                if [ "$slot" = "blue" ]; then prev=green; else prev=blue; fi
+                                echo "▶ Confirming Service endpoints for slot=${slot}..."
+                                ready=0
+                                for i in $(seq 1 30); do
+                                  ep=$(kubectl -n "$ns" get endpoints "$svc" -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null || true)
+                                  pod_ip=$(kubectl -n "$ns" get pods -l "app=aegis-warroom,slot=${slot}" \
+                                    -o jsonpath='{.items[0].status.podIP}' 2>/dev/null || true)
+                                  if [ -n "$ep" ] && [ -n "$pod_ip" ] && echo "$ep" | grep -q "$pod_ip"; then
+                                    echo "▶ Endpoints ready: $ep (pod $pod_ip)"
+                                    ready=1
+                                    break
+                                  fi
+                                  echo "  attempt $i/30 — endpoints='$ep' pod_ip='$pod_ip'"
+                                  sleep 2
+                                done
+                                if [ "$ready" -ne 1 ]; then
+                                  echo "ERROR: Service $svc has no ready endpoints for slot=$slot" >&2
+                                  kubectl -n "$ns" get endpoints "$svc" -o wide || true
+                                  kubectl -n "$ns" get pods -l app=aegis-warroom -o wide || true
+                                  exit 1
+                                fi
+                                echo "▶ Waiting for previous slot ${prev} pods to terminate..."
+                                kubectl -n "$ns" wait --for=delete pod \
+                                  -l "app=aegis-warroom,slot=${prev}" \
+                                  --timeout=120s 2>/dev/null \
+                                  || echo "WARNING: timed out waiting for ${prev} pods (continuing)"
+                            '''
+                        }
+
+                        script {
+                            env.TRAFFIC_PROMOTED = 'true'
+                        }
+                    }
+                }
+
+                stage('Smoke Test Active Service') {
+                    steps {
+                        withCredentials([
+                            file(
+                                credentialsId: env.KUBECONFIG_CREDENTIALS_ID,
+                                variable: 'KUBECONFIG'
+                            )
+                        ]) {
+                            sh 'bash "$K8S_ASSETS_DIR/scripts/k8s_smoke.sh"'
+                        }
+
+                        sh '''
+                            set -eu
+                            test -n "$AEGIS_API_URL" || {
+                              echo "AEGIS_API_URL is empty; skipping external War Room readiness check." >&2
+                              exit 0
+                            }
+                            echo "▶ Waiting for external War Room UI: $AEGIS_API_URL/api/health"
+                            ok=0
+                            for i in $(seq 1 30); do
+                              if curl -sf --max-time 5 "$AEGIS_API_URL/api/health" | grep -qi '"status"[[:space:]]*:[[:space:]]*"ok"'; then
+                                echo "▶ War Room is LIVE for judges: $AEGIS_API_URL"
+                                curl -sf --max-time 5 "$AEGIS_API_URL/api/health" || true
+                                ok=1
+                                break
+                              fi
+                              echo "  attempt $i/30 — not ready yet..."
+                              sleep 3
+                            done
+                            if [ "$ok" -ne 1 ]; then
+                              echo "ERROR: War Room did not become ready at $AEGIS_API_URL/api/health" >&2
+                              exit 1
+                            fi
+                        '''
+                    }
+                }
+
+                stage('Publish Deploy Metadata') {
+                    steps {
+                        echo "▶ Recording deploy of ${env.APP_NAME} for Correlation (does NOT open an incident)."
+                        echo "▶ War Room UI / Fire API share host: ${env.AEGIS_API_URL}"
+
+                        sh '''
+                            set -eu
+
+                            . .venv/bin/activate || . .venv/Scripts/activate
+
+                            test -n "$AEGIS_API_URL" || {
+                                echo "AEGIS_API_URL must be configured in Jenkins for live deployment metadata." >&2
+                                exit 1
+                            }
+
+                            python scripts/publish_deploy_metadata.py \
+                                --service "$APP_NAME" \
+                                --version "$IMAGE_TAG" \
+                                --commit "$APP_COMMIT" \
+                                --color "$DEPLOY_COLOR" \
+                                --url "$AEGIS_API_URL"
+                        '''
+                    }
+                }
+
+                stage('Auto Fire Incident') {
+                    steps {
+                        // Same host as War Room UI. Fire = live inject on checkout-svc.
+                        // Custom button = judges' own multipart form (not Jenkins).
+                        sh '''
+                            set -eu
+                            test -n "$AEGIS_API_URL" || {
+                              echo "AEGIS_API_URL empty; skipping auto Fire." >&2
+                              exit 0
+                            }
+                            echo "▶ War Room UI (open in browser): $AEGIS_API_URL"
+                            echo "▶ Fire endpoint (same app):      $AEGIS_API_URL/api/fire"
+                            echo "▶ Fallback (legacy alias):       $AEGIS_API_URL/api/demo/fire"
+                            ok=0
+                            for i in $(seq 1 10); do
+                              code=$(curl -sS -o /tmp/aegis-fire.json -w "%{http_code}" \
+                                --max-time 30 \
+                                -X POST "$AEGIS_API_URL/api/fire" \
+                                -H "Content-Type: application/json" \
+                                -d '{}' || true)
+                              if [ "$code" != "200" ]; then
+                                code=$(curl -sS -o /tmp/aegis-fire.json -w "%{http_code}" \
+                                  --max-time 30 \
+                                  -X POST "$AEGIS_API_URL/api/demo/fire" \
+                                  -H "Content-Type: application/json" \
+                                  -d '{}' || true)
+                              fi
+                              if [ "$code" = "200" ]; then
+                                echo "▶ Fire accepted (HTTP $code) — incident service = checkout-svc:"
+                                cat /tmp/aegis-fire.json || true
+                                echo
+                                ok=1
+                                break
+                              fi
+                              echo "  attempt $i/10 — HTTP ${code:-curl-fail}, retrying..."
+                              sleep 3
+                            done
+                            if [ "$ok" -ne 1 ]; then
+                              echo "ERROR: Auto Fire failed after promote" >&2
+                              cat /tmp/aegis-fire.json 2>/dev/null || true
+                              exit 1
+                            fi
+                            echo "▶ Open War Room UI — agents should run on checkout-svc: $AEGIS_API_URL"
+                        '''
+                    }
+                }
             }
         }
     }

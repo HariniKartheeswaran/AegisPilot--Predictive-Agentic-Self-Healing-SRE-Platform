@@ -215,16 +215,20 @@ async def _dispatch_alert_local(request: Request, alert: Alert) -> None:
     asyncio.create_task(request.app.state.orchestrator.handle_alert(alert))
 
 
-@app.post("/api/demo/fire")
-async def demo_fire(request: Request):
-    """Fire an incident.
+@app.post("/api/fire")
+@app.post("/api/demo/fire")  # legacy alias — same handler (UI / older scripts)
+async def fire_incident(request: Request):
+    """One-click Fire Incident (War Room button + Jenkins auto-fire).
 
     Live K8s mode (REMEDIATION_MODE=kubernetes + PROMETHEUS_URL): patches a real
-    scrape Deployment ERROR_RATE and publishes immediately. Background load runs
-    long enough for Prometheus (15s eval) to Pending→Firing → AM pre-alert while
-    agents work. Critical AM→bus is suppressed so Fire does not double-open.
+    scrape Deployment ERROR_RATE and starts agents on this pod. Background load
+    keeps Prom hot while agents work. Critical AM→bus is suppressed so Fire does
+    not double-open.
 
-    Otherwise: rotating demo scenario (local / offline).
+    This is NOT Custom (judges' multipart form). Same host as the War Room UI:
+    ``AEGIS_API_URL/api/fire`` hits the app that serves the UI at ``AEGIS_API_URL/``.
+
+    Offline / no Prom: rotating seed scenario.
     """
     from backend.services.alertmanager_ingest import suppress_am_full_for
     from backend.services.live_fire import (
